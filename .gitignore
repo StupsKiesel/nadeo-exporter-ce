@@ -1,0 +1,72 @@
+# Local game assets, Blender scenes, renders and investigation outputs
+/.gbx/
+/.blendfiles/
+/.blender_renders/
+/.screenshots/
+/.trimsheets/
+/.logs/
+/Legacy/
+/test and debug scripts/
+/doc/*.md
+*.gbx
+*.Gbx
+*.GBX
+*.blend
+*.blend[0-9]*
+*.blend@
+*.dds
+*.DDS
+*.pak
+*.Pak
+*.PAK
+GameData/
+Extract/
+.bridge/
+
+# Generated addon packages and packaging intermediates
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Python environments and caches, including the archived development tree
+.venv/
+.venv*/
+venv/
+env/
+test_env_*/
+_wheel_check/
+_wheel_check_all/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Logs, profiling output and generated debug geometry
+debugLiveLogs/
+*.log
+*.log.*
+*.prof
+*.pstats
+/test and debug scripts/_dbg_def_v6_out.obj
+
+# Local credentials and environment overrides (keep example templates)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Editor preview assets and operating-system metadata
+.claude/
+.crossnote/
+.DS_Store
+Thumbs.db
+Desktop.ini

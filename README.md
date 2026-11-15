@@ -377,6 +377,7 @@ or write GBX files.
 | Missing Python dependencies | Run **Install Dependencies**, then restart Blender when prompted. |
 | Openplanet shows **Idle** | Expected outside an import/library task. Start an opted-in map import or Refresh Index to use the bridge. |
 | **Waiting for Trackmania** persists | Check that the game is running, the plugin is enabled/reloaded, signature mode is Developer, and both sides use the same port. |
+| Bridge port already in use | Check for another Blender/bridge instance using that port. Closed connections can be reused between imports on Linux; an active listener must still be stopped or moved to another port. |
 | Missing assets or placeholders | Check the configured GameData folder, import warnings and extraction results. Re-importing can retry available files. |
 | `NOTFOUND` extraction result | The requested path was not found in the running game's file system. This is not proof of a dead reference; hook mode does not fix a missing path. |
 | `SIZE` or incomplete extraction | Check Openplanet's log. Check / Repair retries normal extraction; the map's opt-in tree/item hook fallback is experimental and risky. |

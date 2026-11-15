@@ -32,6 +32,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -407,8 +408,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    # Windows SO_REUSEADDR would let a second Blender bind the same port silently.
-    allow_reuse_address = False
+    # POSIX needs reuse for TIME_WAIT after an import. Windows reuse allows duplicate listeners.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, address, queue: JobQueue, extra_status: Callable[[], dict]) -> None:
         super().__init__(address, _Handler)

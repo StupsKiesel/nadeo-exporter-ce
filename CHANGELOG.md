@@ -2,6 +2,58 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.13] - 2026-11-15
+
+### Added
+
+- **Fill Missing** in Tools > Game Library. It extracts every file from the
+  game index that your library doesn't have yet. A dialog shows the count and
+  size first. Audio, video and shader sources (`.hlsl`, `.PHlsl.Txt`,
+  `.VHlsl.Txt`) are skipped unless enabled. Library
+  tasks now show their progress with a **Cancel** button.
+- **Fill Missing and Check / Repair retry failed files.** A file that fails is
+  requested again normally, then with hook extraction for GBX files. Header
+  data the hook output lacks is restored from the normal extraction, so files
+  such as `BlueBay.Collection.Gbx` can now be recovered. Files the game reports
+  as not available are remembered and skipped until the game updates.
+- **Map import remembers its options.** The mode and settings of the last
+  import from the dialog are saved and used for the next import, also after
+  restarting Blender.
+- **Openplanet menu bar switch.** The extractor plugin (2.2.0) adds a Blender
+  logo to the right end of the Openplanet overlay's menu bar. Its colour shows
+  the connection and running requests, a thin line under it shows progress,
+  and a warning icon marks failures. Clicking it opens a fixed panel in the
+  top-right corner with a clear **Listen for Blender requests** switch, a
+  progress bar, and quick settings for the port and per-file logging.
+- Blender warns when Trackmania still runs an older extractor plugin than the
+  one bundled with the addon, with an **Update Plugin** button.
+
+### Changed
+
+- **Faster extraction.** The plugin extracts several files per frame instead
+  of one, about 1.4 times faster. Failures now include a short reason such as
+  `truncated` or `nodata`. Files the game lists without data are marked in the
+  game index and skipped.
+- Cancelling a library task in Blender now also stops the request in
+  Trackmania instead of letting it run to the end.
+- The extractor plugin no longer shows notification pop-ups in the game;
+  status, progress and failures are shown by the menu bar logo and its panel.
+
+### Fixed
+
+- **Custom Game Library folders now get the files they need.** Files extracted
+  for imports, Check / Repair and manual requests are moved from Openplanet's
+  `Extract\GameData` folder into the custom library. Before, imports couldn't
+  see newly fetched files and copies were left behind on the system drive.
+  Truncated extractions stay in the Extract folder instead of replacing or
+  adding a broken library file.
+- The game index no longer lists empty `Name.Gbx?123` alias entries. Fill
+  Missing requested them and left `Name.Gbx_123` copies in the Extract folder;
+  those copies are removed.
+- Sidebar panels now start open and their subpanels start closed. Before, Map
+  and Developer started closed while some Selected Asset and Map subpanels
+  started open.
+
 ## [0.0.12] - 2026-11-15
 
 ### Added
@@ -11,7 +63,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
   or a pre-release. It downloads the addon ZIP from GitHub after a
   confirmation and installs it in place, keeping your settings. Updates are
   checked once automatically at startup. Pre-releases are offered too unless
-    you turn off the new **Include Pre-releases** preference.
+  you turn off the new **Include Pre-releases** preference.
 
 ## [0.0.11] - 2026-11-15
 
@@ -60,6 +112,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.13]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13
 [0.0.12]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.12
 [0.0.11]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.11
 [0.0.10]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.10

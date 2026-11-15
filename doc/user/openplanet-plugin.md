@@ -53,14 +53,15 @@ signature mode**: in the game, open the Openplanet overlay (`F3`) and set
 
 Start a map import (or just open the import dialog): the *External Files*
 section and the preferences' *Openplanet* section show
-**Connected to Trackmania** once the plugin has connected. In the game,
-Openplanet shows a *Connected to Blender* notification.
+**Connected to Trackmania** once the plugin has connected. In the game, the
+Blender logo in the Openplanet menu bar turns green.
 
 ## During imports
 
-- The plugin shows one notification per batch: *Extracted N files for
-  Blender*, or a red summary if some files failed (details in
-  `Openplanet.log`).
+- The Blender logo turns blue while a request runs, with a thin progress line
+  under it. After the batch, its panel shows *Extracted N files*. An orange
+  warning icon briefly marks failed files; the panel shows the first one, and
+  `Openplanet.log` lists them all.
 - Files that cannot be provided are reported by the import and become
   [placeholders](importing-maps.md#partial-imports-and-placeholders); you can
   re-import later to fill them in.
@@ -69,13 +70,43 @@ Openplanet shows a *Connected to Blender* notification.
 
 ## Plugin settings
 
-The plugin has no window of its own. Its few settings are in Openplanet's
-*Settings* dialog under *Blender Bridge Extractor*:
+The plugin adds a Blender logo to the right end of the Openplanet overlay's
+menu bar (`F3`). Its colour shows the status:
 
-- **Server URL** — default `http://127.0.0.1:1337`. Change it only if you
-  also change the **Port** in the addon's developer preferences; both sides
-  must match.
-- **Notifications** — turn the toasts off, or show problems only.
+| Logo | Meaning |
+|---|---|
+| Green | Connected to Blender |
+| Blue | A request is running |
+| Light grey | Waiting for Blender |
+| Dark grey | Listening is switched off |
+
+An orange warning icon appears next to it for 30 seconds when files failed
+in a request; the panel keeps showing the first failure afterwards.
+While a request runs, a thin blue line under the logo shows its progress.
+Hover over the logo for the status. Click it to open or close a small panel
+fixed below the top-right corner:
+
+- **Listen for Blender requests**: the on/off switch for polling Blender.
+  While it is off, the plugin stays loaded but ignores Blender completely.
+- The connection status, and the running request with a progress bar. When
+  nothing is running, it shows the summary and first failure of the last
+  request instead.
+- **Port**: the port of the Blender bridge (default `1337`). It must match
+  the **Port** in the addon's developer preferences.
+- **Log every extracted file**: turn it off to keep `Openplanet.log` short.
+  Failures are always logged. Openplanet itself still logs one
+  "Extracted file" line per file.
+- **Show in the menu bar**: turn it off to hide the logo. The panel stays
+  available under *Plugins > Blender Bridge Extractor*.
+- **Extract folder** and **Copy log path** buttons.
+
+The same settings, including the full **Blender bridge URL**, are also in
+Openplanet's *Settings* dialog under *Blender Bridge Extractor*.
+
+Cancelling a library task in Blender also stops the request in the game
+within a moment. Since plugin 2.2, Blender warns when Trackmania still runs
+an older plugin than the addon bundles: click **Update Plugin** and reload
+it in Openplanet.
 
 ## Troubleshooting
 

@@ -74,16 +74,24 @@ debugging, manual extraction and maintenance tools, and reveals the
 
 The **Nadeo Exporter CE > Tools** panel is available without Developer UI.
 Its **Game Library** section shows the active GameData folder and Openplanet
-index state, and provides **Check / Repair**, **Refresh Index** and **Open
-Folder** actions. The library path setting and Openplanet/plugin status are
+index state, and provides **Check / Repair**, **Fill Missing**, **Refresh
+Index** and **Open Folder** actions. The library path setting and Openplanet/plugin status are
 available in Addon Preferences, avoiding duplicate controls in the Tools
 panel. Set **Custom Location** there to use a GameData library outside the
 default Openplanet extraction directory. The configured folder is the library
-used by imports. **Check / Repair** and **Refresh Index** start the local
-bridge server if needed and wait up to 30 seconds for the Openplanet plugin.
-Openplanet's `Extract\GameData` remains the staging location for repair
-downloads; Check / Repair copies validated replacements into the configured
-library but does not move or clean up that staging folder.
+used by imports. **Check / Repair**, **Fill Missing** and **Refresh Index**
+start the local bridge server if needed and wait up to 30 seconds for the
+Openplanet plugin. **Fill Missing** extracts files listed in the game index
+that the library doesn't have yet. It shows the count and size first and skips
+audio, video and shaders unless enabled. Openplanet's `Extract\GameData`
+remains the staging location. With a custom library, extracted files from
+imports, repairs, fills and manual requests are moved from there into the
+library. Files that fail validation or come out shorter than the game reports
+stay in staging. Failed files are retried
+once normally, then in hook mode for GBX files, with skipped header data
+restored from the normal extraction when that is proven correct. Files the game
+reports as not available are skipped by later fills of the same game version.
+Running library tasks show their progress with a **Cancel** button.
 The **Batch Processor** section is disabled until GBX writing is supported.
 **Viewport Options** and the GBX Inspector shortcut remain available there.
 

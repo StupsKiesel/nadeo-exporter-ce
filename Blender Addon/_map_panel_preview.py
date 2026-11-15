@@ -355,6 +355,7 @@ class TMBRIDGE_PT_MapPreviewMetadata(bpy.types.Panel):
     bl_category = ADDON_SHORT_NAME
     bl_parent_id = TMBRIDGE_PT_MapPreview.bl_idname
     bl_order = 0
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw_header_preset(self, context):
         root = _map_panel.map_root(context.scene)
@@ -409,6 +410,7 @@ class TMBRIDGE_PT_MapPreviewMood(bpy.types.Panel):
     bl_category = ADDON_SHORT_NAME
     bl_parent_id = TMBRIDGE_PT_MapPreview.bl_idname
     bl_order = 1
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw_header_preset(self, context):
         _action(self.layout, _map_panel.map_root(context.scene), "RESET", "LOOP_BACK")

@@ -29,7 +29,6 @@ class TMBRIDGE_PT_Developer(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = CATEGORY
     bl_order = 100
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, _context):
         pass

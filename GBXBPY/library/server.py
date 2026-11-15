@@ -19,10 +19,13 @@ Endpoints (JSON unless noted):
     Plugin: hand out the next job ``{"id", "kind", "paths"}`` or 204.
 ``POST /api/plugin/jobs/<id>/progress``  (text ``done<TAB>total<TAB>message``)
     Plugin: heartbeat while a job runs; keeps the job and connection alive.
-``POST /api/plugin/jobs/<id>/index``  (text ``path<TAB>size`` lines)
-    Plugin: one chunk of the game file index.
-``POST /api/plugin/jobs/<id>/result``  (text ``STATUS<TAB>path<TAB>detail`` lines)
-    Plugin: finish a job. ``STATUS`` is ``OK``, ``SIZE``, ``FAIL`` or ``NOTFOUND``.
+    404 means the job was cancelled or is unknown; plugin 2.2+ stops it.
+``POST /api/plugin/jobs/<id>/index``  (text ``path<TAB>size[<TAB>nodata]`` lines)
+    Plugin: one chunk of the game file index; ``nodata`` marks entries the
+    game lists without data.
+``POST /api/plugin/jobs/<id>/result``  (text ``STATUS<TAB>path<TAB>detail[<TAB>reason]`` lines)
+    Plugin: finish a job. ``STATUS`` is ``OK``, ``SIZE``, ``FAIL`` or ``NOTFOUND``;
+    the ``OK`` detail is the written size; ``reason`` is a short code (plugin 2.2+).
 
 Pure standard library; never imports ``bpy``.
 """
@@ -57,6 +60,9 @@ class FileResult:
     status: str
     path: str
     detail: str = ""
+    # Plugin 2.2+: missing, nodata, truncated, oversized, extract-false,
+    # unsized or rejected; empty for older plugins.
+    reason: str = ""
 
     @property
     def ok(self) -> bool:
@@ -78,6 +84,8 @@ class Job:
     message: str = ""
     results: list[FileResult] = field(default_factory=list)
     index_lines: list[tuple[str, int]] = field(default_factory=list)
+    # Index entries the plugin flagged "nodata": listed but never extractable.
+    index_unavailable: list[str] = field(default_factory=list)
     game_version: str = ""
     error: str = ""
     event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -112,9 +120,10 @@ def parse_results(text: str) -> list[FileResult]:
         line = line.rstrip("\r")
         if not line.strip() or line.startswith("#"):
             continue
-        parts = line.split("\t", 2)
+        parts = line.split("\t", 3)
         out.append(FileResult(parts[0].strip(), parts[1] if len(parts) > 1 else "",
-                              parts[2] if len(parts) > 2 else ""))
+                              parts[2] if len(parts) > 2 else "",
+                              parts[3].strip() if len(parts) > 3 else ""))
     return out
 
 
@@ -263,13 +272,14 @@ class JobQueue:
             job.done, job.total, job.message = done, total, message
             return True
 
-    def add_index(self, job_id: str, lines: list[tuple[str, int]]) -> bool:
+    def add_index(self, job_id: str, lines: list[tuple[str, int]], unavailable: list[str] = ()) -> bool:
         with self._cond:
             job = self._jobs.get(job_id)
             if job is None or job.kind != "index":
                 return False
             job.heartbeat = time.time()
             job.index_lines.extend(lines)
+            job.index_unavailable.extend(unavailable)
             job.done = len(job.index_lines)
             return True
 
@@ -390,7 +400,9 @@ class _Handler(BaseHTTPRequestHandler):
             if parts[4] == "index":
                 from .index import GameIndex
 
-                ok = self.queue.add_index(parts[3], GameIndex.parse_lines(text))
+                unavailable: list[str] = []
+                lines = GameIndex.parse_lines(text, unavailable)
+                ok = self.queue.add_index(parts[3], lines, unavailable)
                 return self._send(204) if ok else self._send(404, {"error": "unknown index job"})
             if parts[4] == "progress":
                 fields = (text.splitlines() or [""])[0].split("\t", 2)

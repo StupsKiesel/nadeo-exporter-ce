@@ -98,6 +98,7 @@ def resources(context, *, fetch_missing=False):
             queue = server.queue
         provider = LibraryProvider(
             path, queue, fetch=fetch_missing or (queue is not None and queue.plugin_connected()),
+            extract_dir=_openplanet_bridge.extract_dir(),
         )
         with library.active(provider):
             if fetch_missing:

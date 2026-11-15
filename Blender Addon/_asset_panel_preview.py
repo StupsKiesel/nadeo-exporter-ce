@@ -452,6 +452,7 @@ class TMBRIDGE_PT_AssetPreviewPlacement(bpy.types.Panel):
     bl_category = ADDON_SHORT_NAME
     bl_parent_id = TMBRIDGE_PT_AssetPreview.bl_idname
     bl_order = 0
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         obj = selection(context)[0]
@@ -502,6 +503,7 @@ class TMBRIDGE_PT_AssetPreviewVariants(bpy.types.Panel):
     bl_category = ADDON_SHORT_NAME
     bl_parent_id = TMBRIDGE_PT_AssetPreview.bl_idname
     bl_order = 1
+    bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
     def poll(cls, context):

@@ -22,7 +22,7 @@ ADDON_SHORT_NAME = "Nadeo Exporter CE"
 bl_info = {
     "name": "Nadeo Exporter Community Edition",
     "author": "StupsKiesel",
-    "version": (0, 0, 12),
+    "version": (0, 0, 13),
     "blender": (3, 6, 2),
     "location": "File > Import > Nadeo Exporter CE",
     "description": "Community preview: bring Nadeo GBX meshes and materials into Blender",
@@ -313,8 +313,8 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
         name="Game Library",
         description=(
             "GameData folder the importers read game files from. Blank uses Extract\\GameData "
-            "under the selected Openplanet root. A custom library must contain the files needed "
-            "for import; the plugin extracts into Openplanet's Extract folder"
+            "under the selected Openplanet root. The plugin always extracts into Openplanet's "
+            "Extract folder; files are moved from there into a custom library"
         ),
         subtype="DIR_PATH",
         default="",

@@ -3,8 +3,8 @@
 **Nadeo Exporter CE** brings Trackmania (2020) maps and assets into Blender
 for **renders**, **cinematics** and **asset work**.
 
-[**Download addon v0.0.12 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.12/nadeo_exporter_ce_0.0.12.zip)
-| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.12)
+[**Download addon v0.0.13 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.13/nadeo_exporter_ce_0.0.13.zip)
+| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13)
 | [Changelog](CHANGELOG.md)
 
 Install this ZIP in Blender; see the setup instructions below.
@@ -14,7 +14,7 @@ Install this ZIP in Blender; see the setup instructions below.
 *An imported Trackmania map rendered in Blender.*
 
 > [!NOTE]
-> **Version 0.0.12 is a public preview.** Mesh, material and environment
+> **Version 0.0.13 is a public preview.** Mesh, material and environment
 > fidelity is still being refined. Unsupported or unavailable content can
 > become placeholders. This is an import and preview tool: **writing GBX
 > files and exporting edited maps back to Trackmania are not supported**.
@@ -78,7 +78,7 @@ Install this ZIP in Blender; see the setup instructions below.
 ### 1. Install the packaged addon
 
 > [!IMPORTANT]
-> **[Download addon v0.0.12 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.12/nadeo_exporter_ce_0.0.12.zip)**,
+> **[Download addon v0.0.13 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.13/nadeo_exporter_ce_0.0.13.zip)**,
 > then follow the installation steps below.
 > Do **not** install GitHub's **Code > Download ZIP** source archive.
 > Development packages additionally include a timestamp in their filename.
@@ -146,9 +146,17 @@ During activity, preferences show **Waiting for Trackmania** or
 **Connected to Trackmania**. Installing the plugin alone does not keep a
 server running.
 
-![Openplanet notifications showing extraction in progress and successful completion](doc/images/openplanet-extraction.png)
+In the game, the Blender logo at the right end of the Openplanet menu bar
+(`F3`) shows the bridge status and extraction progress: green when connected,
+blue with a progress line while extracting.
 
-*Openplanet reports extraction activity and results. Some requests can still fail.*
+![Blender logo at the right end of the Openplanet menu bar](doc/images/openplanet-menu-bar.png)
+
+Click it for the plugin panel: switch listening for Blender on or off, follow
+the running request or see the last result, and set the port and logging.
+Some requests can still fail.
+
+![Openplanet plugin panel with the listening switch, connection status, last result and quick settings](doc/images/openplanet-panel.png)
 
 The **Port** slider in addon preferences changes the bridge port. If you
 change it, set the same port in the plugin's **Server URL** setting
@@ -169,28 +177,47 @@ to that library's root folder, for example `D:\TrackmaniaLibrary\GameData`.
 It must contain the GameData contents, such as `Stadium`, rather than an
 additional nested GameData folder.
 
-**Changing GameData does not relocate Openplanet's extraction output.**
-The plugin still writes to its own `Extract\GameData` staging folder. A custom
-library must already contain the files needed by imports; pointing to an empty
-folder is not an automatic library migration. Keep space available in the
-Openplanet staging location as well.
+The plugin always extracts to Openplanet's own `Extract\GameData` staging
+folder. With a custom library, the addon moves each extracted file from there
+into the library, so the files don't stay on the system drive. This covers
+import fetches, Check / Repair, Fill Missing and manual requests. Pointing to
+an empty folder works: imports fetch what they need, and **Fill Missing** fills
+the rest. Keep some free space in the Openplanet staging location for files
+on their way to the library.
 
 ### Maintain the library
 
 Open the 3D Viewport sidebar with **N**, then
 **Nadeo Exporter CE > Tools > Game Library**:
 
+![Game Library panel with the library folder, Check / Repair, Fill Missing, Refresh Index and the game index status](doc/images/game-library-panel.png)
+
 - **Open Folder** opens the configured library.
 - **Refresh Index** updates the list of files available in the running game.
   It does not extract the entire game.
 - **Check / Repair** checks existing library files and requests normal
   extraction of replacements for detected broken files. Validated replacements
-  are copied from Openplanet's staging folder into the configured library.
+  are moved from Openplanet's staging folder into the configured library.
   Some files may remain unresolved.
+- **Fill Missing** compares the library with the game index and extracts the
+  files the library doesn't have yet. A dialog shows the file count and size
+  first. Audio, video and shader files are skipped unless **Include Audio,
+  Video and Shaders** is enabled. Valid files already waiting in the staging
+  folder are moved without extracting them again. A full fill can take a long
+  time and need many GB.
 
-These actions start the bridge when needed. Refreshing the index or fetching
-replacements requires Trackmania with the extractor enabled. Repair does not
-move or clean up the staging folder.
+Check / Repair and Fill Missing retry files that fail. First they request a
+normal extraction again. Then GBX files go through hook extraction, one file
+at a time. If the hook output lacks header data the game skipped, that data is
+restored from the normal extraction. A file is installed only if it has the
+game's exact size and passes validation. Hook extraction can crash the game in
+rare cases. Files the game reports as not available, such as shader sources it
+doesn't ship, are remembered for that game version and skipped by later fills.
+
+These actions start the bridge when needed and run in the background. A
+progress line with a **Cancel** button appears under the buttons. Refreshing
+the index or extracting files requires Trackmania with the extractor enabled.
+Files that fail validation stay in the staging folder.
 
 For offline imports, use a populated library and turn **Fetch Missing Files**
 off. Missing assets cannot be recovered without a suitable source.
@@ -390,16 +417,11 @@ or write GBX files.
 | Skins or signs are missing | Check Trackmania/User Files paths, map skin options, and whether downloads are allowed. |
 | Imports use too much memory or take too long | Lower texture size/detail and disable optional grass, spectators and extra LODs. |
 
-<details>
-<summary>Example of an extraction failure notification</summary>
-
-![Openplanet reporting a missing requested shader file](doc/images/openplanet-extraction-failure.png)
-
-A batch can extract some files successfully while others fail. Read the
-individual results rather than treating the whole batch as successful.
+A batch can extract some files successfully while others fail. An orange
+warning icon next to the Blender logo in the Openplanet menu bar briefly marks
+failed files; its panel shows the first failure. Read the individual results rather
+than treating the whole batch as successful.
 Openplanet's current log is normally `%USERPROFILE%\OpenplanetNext\Openplanet.log`.
-
-</details>
 
 ### Logs and bug reports
 

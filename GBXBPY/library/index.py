@@ -18,6 +18,33 @@ from typing import Iterable, Optional
 
 INDEX_FOLDER = ".bridge"
 INDEX_FILE = "game_index.json"
+UNAVAILABLE_FILE = "unavailable.json"
+
+
+def _unavailable_path(library_dir: str) -> str:
+    return os.path.join(library_dir, INDEX_FOLDER, UNAVAILABLE_FILE)
+
+
+def load_unavailable(library_dir: str, game_version: str) -> set[str]:
+    """Lowercased paths the game reported as not extractable for ``game_version``."""
+    try:
+        with open(_unavailable_path(library_dir), encoding="utf-8") as handle:
+            data = json.load(handle)
+        if str(data.get("game_version", "")) != game_version:
+            return set()
+        return {str(rel).lower() for rel in data.get("files", ())}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
+
+
+def save_unavailable(library_dir: str, game_version: str, rel_paths: Iterable[str]) -> None:
+    """Add ``rel_paths`` to the unavailable list; a new game version starts a new list."""
+    files = load_unavailable(library_dir, game_version) | {normalize(rel).lower() for rel in rel_paths}
+    target = _unavailable_path(library_dir)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target + ".tmp", "w", encoding="utf-8") as handle:
+        json.dump({"game_version": game_version, "files": sorted(files)}, handle, separators=(",", ":"))
+    os.replace(target + ".tmp", target)
 
 
 def normalize(rel_path: str) -> str:
@@ -46,7 +73,9 @@ class GameIndex:
 
     def add(self, rel_path: str, size: int) -> None:
         rel = normalize(rel_path)
-        if not rel:
+        # "Name.Gbx?394" entries are empty aliases of "Name.Gbx"; the game
+        # extracts them as "Name.Gbx_394", which no import ever references.
+        if not rel or "?" in rel:
             return
         self._files[rel.lower()] = (rel, int(size))
         parts = rel.split("/")
@@ -110,15 +139,21 @@ class GameIndex:
             return None
 
     @staticmethod
-    def parse_lines(text: str) -> list[tuple[str, int]]:
-        """``path<TAB>size`` lines as uploaded by the plugin."""
+    def parse_lines(text: str, unavailable: Optional[list[str]] = None) -> list[tuple[str, int]]:
+        """``path<TAB>size[<TAB>flags]`` lines as uploaded by the plugin.
+
+        Paths flagged ``nodata`` are also appended to ``unavailable``.
+        """
         out = []
         for line in text.splitlines():
-            path, tab, size = line.strip("\r").partition("\t")
+            path, tab, rest = line.strip("\r").partition("\t")
             if not tab or not path.strip():
                 continue
+            size, _tab, flags = rest.partition("\t")
             try:
                 out.append((path.strip(), int(size or 0)))
             except ValueError:
                 continue
+            if unavailable is not None and "nodata" in flags.strip().split(","):
+                unavailable.append(path.strip())
         return out

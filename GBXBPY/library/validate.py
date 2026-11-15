@@ -24,6 +24,7 @@ The module never imports ``bpy`` so it can run on a worker thread.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -450,63 +451,143 @@ def restore_hook_header(hook_data: bytes, original_prefix: bytes, expected_size:
     return restored
 
 
-def copy_extracted(root: str, extract_root: str, results: Iterable[FileResult],
-                   index: Optional[GameIndex] = None, *,
-                   progress: Optional[ProgressCallback] = None) -> tuple[int, dict[str, str]]:
-    """Atomically install successful, validated extraction results into GameData."""
+def recover_hook_extract(rel: str, hook_data: bytes, normal_prefix: bytes,
+                         expected_size: Optional[int]) -> bytes:
+    """Bytes to install after a hook extraction of ``rel``.
+
+    The hook output itself when it is complete and valid; otherwise the header
+    data the game skipped, restored from the normal (truncated) extraction.
+    Raises ``ValueError`` when neither is proven valid.
+    """
+    if hook_data and (not expected_size or len(hook_data) == expected_size):
+        check = check_bytes(rel, hook_data)
+        if check.ok:
+            return hook_data
+    if not expected_size:
+        raise ValueError("hook output is not valid and the game size is unknown")
+    try:
+        return restore_hook_header(hook_data, normal_prefix, expected_size)
+    except ValueError as exc:
+        raise ValueError(f"hook output {len(hook_data)} of {expected_size} bytes; {exc}") from None
+
+
+def remove_alias_copies(extract_root: str, index: GameIndex) -> int:
+    """Delete ``Name.Gbx_394`` copies the game writes for ``Name.Gbx?394`` index aliases."""
+    removed = 0
+    for rel in _walk(extract_root):
+        base, sep, number = rel.rpartition("_")
+        if not sep or not number.isdigit() or not index.has_file(base) or index.has_file(rel):
+            continue
+        try:
+            os.remove(os.path.join(extract_root, *rel.split("/")))
+            removed += 1
+        except OSError as exc:
+            log.warning("Cannot remove alias copy %s: %s", rel, exc)
+    return removed
+
+
+def _contained(root_path: str, parts: list[str]) -> str:
+    base = os.path.realpath(root_path)
+    target = os.path.realpath(os.path.join(base, *parts))
+    if os.path.commonpath((base, target)) != base:
+        raise ValueError("path escapes GameData directory")
+    return target
+
+
+def _game_parts(path: str) -> list[str]:
+    parts = path.replace("\\", "/").split("/")
+    if len(parts) < 2 or parts[0].lower() != "gamedata":
+        raise ValueError("result is not a GameData file")
+    parts = parts[1:]
+    if any(not part or part in (".", "..") or ":" in part for part in parts):
+        raise ValueError("invalid GameData path")
+    return parts
+
+
+def _cross_device(exc: OSError) -> bool:
+    return exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == 17
+
+
+def move_file(source: str, target: str) -> None:
+    """Atomically replace ``target`` with ``source`` and remove ``source``, across drives too."""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    try:
+        os.replace(source, target)
+        return
+    except OSError as exc:
+        if not _cross_device(exc):
+            raise
+    partial = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".bridge-move-", dir=os.path.dirname(target),
+                                         delete=False) as handle:
+            partial = handle.name
+        shutil.copyfile(source, partial)
+        os.replace(partial, target)
+        partial = None
+    finally:
+        if partial is not None and os.path.exists(partial):
+            os.remove(partial)
+    try:
+        os.remove(source)
+    except OSError as exc:
+        log.warning("Installed %s but could not remove the extracted copy: %s", target, exc)
+
+
+def same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def install_extracted(root: str, extract_root: str, results: Iterable[FileResult],
+                      index: Optional[GameIndex] = None, *, verify: bool = True,
+                      statuses: tuple[str, ...] = ("OK",),
+                      progress: Optional[ProgressCallback] = None) -> tuple[int, dict[str, str]]:
+    """Move extraction results from Openplanet's ``extract_root`` into the library ``root``.
+
+    With ``verify``, a file is installed only when its size matches the game
+    and it passes :func:`check_bytes`; rejected files stay in ``extract_root``
+    for diagnosis. When both folders are the same, files are only checked.
+    Returns ``(installed, {result path: reason})``.
+    """
     progress = progress or _no_progress
     results = list(results)
-    repaired = 0
+    installed = 0
     failed = {}
-
-    def contained(root_path: str, parts: list[str]) -> str:
-        base = os.path.realpath(root_path)
-        target = os.path.realpath(os.path.join(base, *parts))
-        if os.path.commonpath((base, target)) != base:
-            raise ValueError("path escapes GameData directory")
-        return target
-
     for number, result in enumerate(results):
         progress(number / max(len(results), 1), f"Installing {number}/{len(results)}: {result.path}")
-        partial = None
         try:
-            if not result.ok:
-                raise ValueError(f"{result.status}: {result.detail}")
-            parts = result.path.replace("\\", "/").split("/")
-            if len(parts) < 2 or parts[0].lower() != "gamedata":
-                raise ValueError("result is not a GameData file")
-            parts = parts[1:]
-            if any(not part or part in (".", "..") or ":" in part for part in parts):
-                raise ValueError("invalid GameData path")
+            if result.status not in statuses:
+                reason = f" ({result.reason})" if result.reason else ""
+                raise ValueError(f"{result.status}: {result.detail}{reason}")
+            parts = _game_parts(result.path)
             rel = "/".join(parts)
-            source = contained(extract_root, parts)
-            target = contained(root, parts)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            source = _contained(extract_root, parts)
+            target = _contained(root, parts)
+            if not os.path.isfile(source):
+                raise ValueError("extracted file not found")
+            if verify:
+                expected = index.size(rel) if index is not None else None
+                if expected is None and result.detail.isdigit():
+                    expected = int(result.detail)
+                size = os.path.getsize(source)
+                if expected and size != expected:
+                    raise ValueError(f"size mismatch: {size} bytes, game has {expected}")
+                with open(source, "rb") as handle:
+                    check = check_bytes(rel, handle.read())
+                if not check.ok:
+                    raise ValueError(check.reason)
             if os.path.normcase(source) != os.path.normcase(target):
-                with tempfile.NamedTemporaryFile(prefix=".bridge-repair-", dir=os.path.dirname(target),
-                                                 delete=False) as handle:
-                    partial = handle.name
-                shutil.copyfile(source, partial)
-                candidate = partial
-            else:
-                candidate = source
-            expected = index.size(rel) if index is not None else None
-            if expected is None and result.detail.isdigit():
-                expected = int(result.detail)
-            if expected and os.path.getsize(candidate) != expected:
-                raise ValueError(f"size mismatch: {os.path.getsize(candidate)} bytes, game has {expected}")
-            with open(candidate, "rb") as handle:
-                check = check_bytes(rel, handle.read())
-            if not check.ok:
-                raise ValueError(check.reason)
-            if partial is not None:
-                os.replace(partial, target)
-            repaired += 1
+                move_file(source, target)
+            installed += 1
         except (OSError, ValueError) as exc:
             failed[result.path] = str(exc)
-            log.warning("Library repair failed for %s: %s", result.path, exc)
-        finally:
-            if partial is not None and os.path.exists(partial):
-                os.remove(partial)
-    progress(1.0, f"Installed {repaired}/{len(results)} files")
-    return repaired, failed
+            log.warning("Library install failed for %s: %s", result.path, exc)
+    progress(1.0, f"Installed {installed}/{len(results)} files")
+    return installed, failed
+
+
+def missing_files(root: str, index: GameIndex, *, skip_suffixes: tuple[str, ...] = ()) -> list[tuple[str, int]]:
+    """``(GameData-relative path, size)`` of every indexed file absent from ``root``."""
+    present = {rel.lower() for rel in _walk(root)}
+    return [(rel, size) for rel, size in index.files()
+            if rel.lower() not in present and not rel.lower().endswith(skip_suffixes)]

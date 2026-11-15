@@ -135,7 +135,8 @@ class TMBRIDGE_OT_ApplyMood(bpy.types.Operator):
         gamedata = _get_gamedata_dir(context)
         queue = _openplanet_bridge.queue()
         issues: list[str] = []
-        provider = LibraryProvider(gamedata, queue, fetch=queue is not None and queue.plugin_connected())
+        provider = LibraryProvider(gamedata, queue, fetch=queue is not None and queue.plugin_connected(),
+                                   extract_dir=_openplanet_bridge.extract_dir())
         with library.active(provider):
             provider.prepare()
             environment = resolve_environment(
@@ -206,7 +207,6 @@ class TMBRIDGE_PT_Map(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = CATEGORY
     bl_order = 50
-    bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
     def poll(cls, context):

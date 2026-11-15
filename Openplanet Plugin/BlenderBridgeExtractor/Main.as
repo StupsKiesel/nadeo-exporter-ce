@@ -11,46 +11,47 @@
 //   {"id", "kind": "index", "paths": []}        list every GameData file
 // Files land in the current Openplanet data folder's Extract/<path>, used as
 // game library. Index chunks go to POST /api/plugin/jobs/<id>/index as
-// "path<TAB>size" lines, results to POST /api/plugin/jobs/<id>/result as
-// "STATUS<TAB>path<TAB>detail" lines (OK, SIZE, FAIL or NOTFOUND). While a
-// job runs, POST /api/plugin/jobs/<id>/progress ("done<TAB>total<TAB>message")
-// tells Blender the plugin is still alive.
+// "path<TAB>size[<TAB>nodata]" lines ("nodata": listed by the game without
+// any data, never extractable). Results go to POST /api/plugin/jobs/<id>/result
+// as "STATUS<TAB>path<TAB>detail[<TAB>reason]" lines: STATUS is OK, SIZE, FAIL
+// or NOTFOUND; the OK detail is the written size; reason is one of missing,
+// nodata, truncated, oversized, extract-false, unsized, rejected.
+// While a job runs, POST /api/plugin/jobs/<id>/progress
+// ("done<TAB>total<TAB>message") tells Blender the plugin is still alive; a
+// 404 answer means Blender cancelled or forgot the job, which stops it.
 //
-// There is no window: enable the plugin and forget it. Settings live in
-// Openplanet's Settings dialog; activity is reported as notifications. Jobs
-// that arrive back to back (one map import) share one start and one summary
-// notification.
+// The overlay's menu bar shows a status-tinted Blender logo; clicking it opens
+// a fixed panel at the top right with the polling switch and quick settings.
+// Jobs that arrive back to back (one map import) share one summary.
 
-[Setting category="General" name="Serve requests from Blender"]
+[Setting category="General" name="Listen for Blender requests"]
 bool S_Enabled = true;
+
+[Setting category="General" name="Show in the overlay menu bar"]
+bool S_ShowInMenuBar = true;
 
 [Setting category="General" name="Blender bridge URL"]
 string S_ServerUrl = "http://127.0.0.1:1337";
 
-[Setting category="Notifications" name="Show notifications"]
-bool S_Notify = true;
+[Setting category="General" name="Log every extracted file" description="Failures are always logged."]
+bool S_LogFiles = true;
 
-[Setting category="Notifications" name="Only show problems" description="Hide connection and success notifications."]
-bool S_NotifyProblemsOnly = false;
-
-const string PLUGIN_VERSION = "2.1.6";
+const string PLUGIN_VERSION = "2.2.0";
 const string TITLE = "Blender Bridge";
 const uint INDEX_CHUNK = 5000;
+// Extract files back to back for up to this many ms before yielding a frame.
+const uint64 FRAME_BUDGET = 8;
 // Seconds to wait for a follow-up job before a batch counts as finished.
 const int BATCH_GAP = 3;
-// A lost connection is only announced after this many ms, so a bridge restart
-// (toggle, port change) that reconnects in time stays silent.
-const uint64 DISCONNECT_GRACE = 6000;
-const vec4 COLOR_OK = vec4(0.13f, 0.45f, 0.20f, 1.0f);
-const vec4 COLOR_ERROR = vec4(0.65f, 0.15f, 0.15f, 1.0f);
+// How long the menu bar keeps the warning icon after a batch with failures.
+const uint64 FAILURE_ICON_TIME = 30000;
 
 bool g_connected = false;
-// What the user was last told: "Connected to Blender" shown and not yet
-// followed by "Blender disconnected".
-bool g_announced = false;
-uint64 g_lostAt = 0;
 Net::HttpRequest@ g_ping;
+string g_pingJob = "";
 uint64 g_lastPing = 0;
+// Job Blender answered 404 for: cancelled there, or the bridge restarted.
+string g_cancelledJob = "";
 
 // Current batch of back-to-back jobs.
 bool g_inBatch = false;
@@ -59,17 +60,26 @@ uint g_batchFailed = 0;
 string g_batchFirstFailure = "";
 string g_batchIndex = "";
 
-void Notify(const string &in text) {
-    if (S_Notify && !S_NotifyProblemsOnly) UI::ShowNotification(TITLE, text);
-}
+// Menu state.
+bool g_panelOpen = false;
+float g_barRight = 0;
+float g_barBottom = 0;
+const float PANEL_WIDTH = 340;
+UI::Texture@ g_logo;
+bool g_logoLoaded = false;
+string g_jobKind = "";
+uint g_jobDone = 0;
+uint g_jobTotal = 0;
+string g_jobFile = "";
+string g_lastSummary = "";
+string g_lastFailure = "";
+uint64 g_lastFailureAt = 0;
 
-void NotifySuccess(const string &in text) {
-    if (S_Notify && !S_NotifyProblemsOnly) UI::ShowNotification(TITLE, text, COLOR_OK, 5000);
-}
-
-void NotifyProblem(const string &in text) {
+// Logs a rejected or failed job and shows it in the panel.
+void ReportProblem(const string &in text) {
     warn(text);
-    if (S_Notify) UI::ShowNotification(TITLE, text, COLOR_ERROR, 10000);
+    g_lastSummary = text;
+    g_lastFailure = "";
 }
 
 string ServerUrl() {
@@ -120,14 +130,28 @@ bool Post(const string &in route, const string &in body) {
 void Heartbeat(const string &in id, uint done, uint total, const string &in message) {
     if (id.Length == 0) return;
     if (g_ping !is null && !g_ping.Finished()) return;
+    CheckPing();
     if (Time::Now - g_lastPing < 2000) return;
     g_lastPing = Time::Now;
+    g_pingJob = id;
     @g_ping = Net::HttpPost(ServerUrl() + "/api/plugin/jobs/" + id + "/progress",
         "" + done + "\t" + total + "\t" + message, "text/plain; charset=utf-8");
 }
 
+void CheckPing() {
+    if (g_ping is null || !g_ping.Finished()) return;
+    if (g_ping.ResponseCode() == 404) g_cancelledJob = g_pingJob;
+    @g_ping = null;
+}
+
+// True once Blender answered a heartbeat for this job with 404.
+bool JobCancelled(const string &in id) {
+    if (id.Length == 0) return false;
+    CheckPing();
+    return g_cancelledJob == id;
+}
+
 void Main() {
-    startnew(WatchConnection);
     while (true) {
         if (!S_Enabled) {
             EndBatch();
@@ -168,55 +192,211 @@ void Main() {
 void SetConnected(bool connected) {
     if (connected == g_connected) return;
     g_connected = connected;
-    if (connected) {
-        print("Connected to Blender (" + ServerUrl() + ")");
-        if (!g_announced) {
-            g_announced = true;
-            Notify("Connected to Blender");
-        }
-    } else {
-        print("Blender not reachable (" + ServerUrl() + ")");
-        g_lostAt = Time::Now;
-    }
+    print((connected ? "Connected to Blender (" : "Blender not reachable (") + ServerUrl() + ")");
 }
 
-// Serving switched off in the plugin settings: forget the connection quietly.
+// Listening switched off: forget the connection quietly.
 void Pause() {
     g_connected = false;
-    g_announced = false;
 }
 
-void WatchConnection() {
-    while (true) {
-        if (g_announced && !g_connected && S_Enabled && Time::Now - g_lostAt >= DISCONNECT_GRACE) {
-            g_announced = false;
-            Notify("Blender disconnected");
-        }
-        sleep(500);
+// The menu bar shows a white Blender silhouette tinted by status (dark grey
+// when listening is off), plus a warning icon for a while after a batch had
+// failures.
+// Logo tint as 0xRRGGBBAA; `textColor` is the same colour as a format code.
+uint LogoColor(string &out textColor) {
+    if (!S_Enabled) { textColor = "\\$555"; return 0x555555FF; }
+    if (g_jobKind.Length > 0) { textColor = "\\$4af"; return 0x44AAFFFF; }
+    if (g_connected) { textColor = "\\$4f8"; return 0x44FF88FF; }
+    textColor = "\\$ccc";
+    return 0xCCCCCCFF;
+}
+
+// Returns the coloured icons after the logo; `plain` gets the uncoloured
+// text, used to measure its width.
+string MenuIcons(string &out plain) {
+    plain = "";
+    if (S_Enabled && g_jobKind.Length == 0 && g_lastFailure.Length > 0
+            && Time::Now - g_lastFailureAt < FAILURE_ICON_TIME) {
+        plain = " " + Icons::ExclamationTriangle;
+        return " \\$f80" + Icons::ExclamationTriangle + "\\$z";
     }
+    return "";
 }
 
-void BeginBatch(const string &in text) {
+string StatusLine() {
+    if (!S_Enabled) return "Paused: not listening for Blender";
+    if (g_connected) return "\\$4f8" + Icons::Check + "\\$z Connected to Blender";
+    return "Waiting for Blender";
+}
+
+string JobLine() {
+    string count = g_jobTotal > 0 ? " " + g_jobDone + " of " + g_jobTotal : g_jobDone > 0 ? " " + g_jobDone : "";
+    return Icons::Download + " " + g_jobKind + count;
+}
+
+void RenderMenuMain() {
+    if (!S_ShowInMenuBar) return;
+    if (!g_logoLoaded) {
+        g_logoLoaded = true;
+        @g_logo = UI::LoadTexture("blender.png");
+    }
+    // Draw at the right end of the menu bar, then put the cursor back so
+    // plugins drawn after this one keep their place on the left.
+    vec2 start = UI::GetCursorPos();
+    string plain;
+    string label = MenuIcons(plain);
+    string textColor;
+    uint logoColor = LogoColor(textColor);
+    float lineHeight = UI::MeasureString("A").y;
+    float barHeight = UI::GetWindowSize().y;
+    float logoSize = Math::Max(lineHeight, barHeight * 0.8f);
+    // Leading spaces reserve room for the logo inside the clickable label.
+    string pad = "";
+    if (g_logo is null) {
+        pad = textColor + "Blender\\$z";
+        plain = "Blender" + plain;
+    } else {
+        float space = Math::Max(UI::MeasureString(" ").x, 1.0f);
+        while (UI::MeasureString(pad).x < logoSize + space) pad += " ";
+        plain = pad + plain;
+    }
+    float spacing = UI::GetStyleVarVec2(UI::StyleVar::ItemSpacing).x;
+    float width = UI::MeasureString(plain).x + spacing;
+    float x = Math::Max(start.x, start.x + UI::GetContentRegionAvail().x - width);
+    if (g_logo !is null) {
+        vec2 pos = UI::GetWindowPos() + vec2(x + spacing * 0.5f, Math::Max(0.0f, (barHeight - logoSize) * 0.5f));
+        UI::GetWindowDrawList().AddImage(g_logo, pos, vec2(logoSize, logoSize), logoColor);
+    }
+    UI::SetCursorPos(vec2(x, start.y));
+    if (UI::MenuItem(pad + label + "###BlenderBridgeMenu", "", g_panelOpen)) g_panelOpen = !g_panelOpen;
+    float progress = JobProgress();
+    if (progress >= 0) {
+        // Thin progress line along the bottom edge of the menu item.
+        vec2 base = UI::GetWindowPos() + vec2(x, barHeight - 2);
+        auto draw = UI::GetWindowDrawList();
+        draw.AddRectFilled(vec4(base, vec2(width, 2)), vec4(1, 1, 1, 0.15f));
+        draw.AddRectFilled(vec4(base, vec2(width * progress, 2)), vec4(0.27f, 0.67f, 1, 1));
+    }
+    if (UI::IsItemHovered() && !g_panelOpen) {
+        UI::BeginTooltip();
+        UI::Text(TITLE);
+        UI::Text(StatusLine());
+        if (g_jobKind.Length > 0) UI::Text(JobLine());
+        else if (g_lastFailure.Length > 0) UI::Text("\\$f80" + Icons::ExclamationTriangle + "\\$z " + g_lastSummary);
+        UI::EndTooltip();
+    }
+    g_barRight = UI::GetWindowPos().x + UI::GetWindowSize().x;
+    g_barBottom = UI::GetWindowPos().y + barHeight;
+    UI::SetCursorPos(start);
+}
+
+void RenderMenu() {
+    if (UI::MenuItem(Icons::Plug + " " + TITLE, "", g_panelOpen)) g_panelOpen = !g_panelOpen;
+}
+
+// Fraction of the running job that is done, or -1 when no counted job runs.
+float JobProgress() {
+    if (g_jobKind.Length == 0 || g_jobTotal == 0) return -1;
+    return Math::Min(1.0f, float(g_jobDone) / float(g_jobTotal));
+}
+
+// Port of the bridge URL, or 0 when it has none.
+int ServerPort() {
+    string[]@ parts = UrlHost().Split(":");
+    if (parts.Length < 2) return 0;
+    return Text::ParseInt(parts[parts.Length - 1]);
+}
+
+// Host part of the bridge URL (without scheme and path).
+string UrlHost() {
+    string url = ServerUrl();
+    int scheme = url.IndexOf("://");
+    if (scheme >= 0) url = url.SubStr(scheme + 3);
+    int slash = url.IndexOf("/");
+    if (slash >= 0) url = url.SubStr(0, slash);
+    return url;
+}
+
+void SetServerPort(int port) {
+    string host = UrlHost().Split(":")[0];
+    if (host.Length == 0) host = "127.0.0.1";
+    S_ServerUrl = "http://" + host + ":" + port;
+}
+
+// Fixed panel below the right end of the overlay menu bar.
+void RenderInterface() {
+    if (!g_panelOpen) return;
+    float scale = UI::GetScale();
+    float right = g_barRight > 0 ? g_barRight : float(Display::GetWidth());
+    UI::SetNextWindowSize(int(PANEL_WIDTH), 0, UI::Cond::Always);
+    UI::SetNextWindowPos(int(right / scale - PANEL_WIDTH), int(g_barBottom / scale), UI::Cond::Always);
+    auto flags = UI::WindowFlags(UI::WindowFlags::NoMove | UI::WindowFlags::NoResize | UI::WindowFlags::NoCollapse
+        | UI::WindowFlags::NoSavedSettings | UI::WindowFlags::NoDocking | UI::WindowFlags::NoTitleBar);
+    if (UI::Begin(TITLE + "###BlenderBridgePanel", g_panelOpen, flags)) RenderPanelContent();
+    UI::End();
+}
+
+void RenderPanelContent() {
+    S_Enabled = UI::Checkbox("Listen for Blender requests", S_Enabled);
+    UI::TextDisabled(S_Enabled ? "Polls Blender for extraction requests." : "Not polling; Blender cannot request files.");
+    UI::Text(StatusLine());
+    if (g_jobKind.Length > 0) {
+        UI::Text(JobLine());
+        float progress = JobProgress();
+        if (progress >= 0) UI::ProgressBar(progress, vec2(-1, 4 * UI::GetScale()), "");
+        if (g_jobFile.Length > 0) UI::TextDisabled(g_jobFile);
+    } else if (g_lastSummary.Length > 0) {
+        UI::Text("Last: " + g_lastSummary);
+        if (g_lastFailure.Length > 0) UI::TextWrapped("\\$f80" + Icons::ExclamationTriangle + "\\$z " + g_lastFailure);
+    }
+
+    UI::SeparatorText("Settings");
+    int port = ServerPort();
+    UI::SetNextItemWidth(120);
+    int newPort = UI::InputInt("Port", port);
+    if (newPort != port && newPort > 0 && newPort < 65536) SetServerPort(newPort);
+    UI::TextDisabled("Must match the port in Blender's addon preferences.");
+    S_LogFiles = UI::Checkbox("Log every extracted file", S_LogFiles);
+    S_ShowInMenuBar = UI::Checkbox("Show in the menu bar", S_ShowInMenuBar);
+
+    UI::Separator();
+    if (UI::Button(Icons::FolderOpen + " Extract folder")) {
+        string folder = IO::FromDataFolder("Extract");
+        if (!IO::FolderExists(folder)) IO::CreateFolder(folder);
+        OpenExplorerPath(folder);
+    }
+    UI::SameLine();
+    if (UI::Button(Icons::Clipboard + " Copy log path")) IO::SetClipboard(IO::FromDataFolder("Openplanet.log"));
+    UI::TextDisabled("Plugin v" + PLUGIN_VERSION);
+}
+
+void BeginBatch() {
     if (g_inBatch) return;
     g_inBatch = true;
     g_batchOk = 0;
     g_batchFailed = 0;
     g_batchFirstFailure = "";
     g_batchIndex = "";
-    Notify(text);
 }
 
 void EndBatch() {
     if (!g_inBatch) return;
     g_inBatch = false;
-    if (g_batchIndex.Length > 0) NotifySuccess(g_batchIndex);
+    if (g_batchIndex.Length > 0) {
+        print(g_batchIndex);
+        g_lastSummary = g_batchIndex;
+        g_lastFailure = "";
+    }
     uint total = g_batchOk + g_batchFailed;
     if (total == 0) return;
+    g_lastSummary = "Extracted " + g_batchOk + " of " + total + (total == 1 ? " file" : " files");
+    g_lastFailure = g_batchFirstFailure;
+    g_lastFailureAt = Time::Now;
     if (g_batchFailed > 0) {
-        NotifyProblem("Extracted " + g_batchOk + " of " + total + " files, " + g_batchFailed
-            + " failed\n" + g_batchFirstFailure + "\nSee Openplanet.log for all failures.");
+        warn("Extracted " + g_batchOk + " of " + total + " files, " + g_batchFailed + " failed; first: " + g_batchFirstFailure);
     } else {
-        NotifySuccess("Extracted " + total + (total == 1 ? " file" : " files") + " for Blender");
+        print("Extracted " + total + (total == 1 ? " file" : " files") + " for Blender");
     }
 }
 
@@ -228,28 +408,44 @@ void RunJob(Json::Value@ job) {
         Json::Value@ list = job["paths"];
         for (uint i = 0; i < list.Length; i++) paths.InsertLast(string(list[i]));
     }
+    g_cancelledJob = "";
+    g_jobKind = kind == "index" ? "Indexing" : kind == "extract" ? "Extracting" : "Hook extracting";
+    g_jobDone = 0;
+    g_jobTotal = 0;
+    g_jobFile = "";
+    RunJobKind(id, kind, paths);
+    g_jobKind = "";
+    g_jobTotal = 0;
+    g_jobFile = "";
+}
+
+void RunJobKind(const string &in id, const string &in kind, array<string>@ paths) {
     if (kind == "index") {
-        BeginBatch("Indexing game files for Blender...");
+        BeginBatch();
         RunIndex(id);
     } else if (kind == "extract" || kind == "extract_hook_tree" || kind == "extract_hook") {
         bool hook = kind != "extract";
         string suffix = kind == "extract_hook_tree" ? ".vegettreemodel.gbx" : ".gbx";
         if (hook && (paths.Length != 1 || !paths[0].ToLower().EndsWith(suffix))) {
-            Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\thook diagnostic requires exactly one matching GBX file");
-            NotifyProblem("Rejected unsafe hook diagnostic request");
+            Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\thook diagnostic requires exactly one matching GBX file\trejected");
+            ReportProblem("Rejected unsafe hook diagnostic request");
             return;
         }
         if (hook && NormalizePath(paths[0]).ToLower().EndsWith("/plugresource.gbx")) {
-            Post("/api/plugin/jobs/" + id + "/result", "FAIL\t" + NormalizePath(paths[0]) + "\thook extraction disabled: crashes TM2020");
-            NotifyProblem("PlugResource.Gbx hook extraction is disabled because it crashes TM2020");
+            Post("/api/plugin/jobs/" + id + "/result", "FAIL\t" + NormalizePath(paths[0]) + "\thook extraction disabled: crashes TM2020\trejected");
+            ReportProblem("PlugResource.Gbx hook extraction is disabled because it crashes TM2020");
             return;
         }
-        BeginBatch("Extracting game files for Blender...");
+        BeginBatch();
         array<string>@ lines = RunExtract(paths, id, hook);
+        if (JobCancelled(id)) {
+            print("Blender cancelled job " + id + " after " + lines.Length + " files");
+            return;
+        }
         Post("/api/plugin/jobs/" + id + "/result", Join(lines, "\n"));
     } else {
-        Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\tunknown job kind");
-        NotifyProblem("Rejected unknown job kind: " + kind);
+        Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\tunknown job kind\trejected");
+        ReportProblem("Rejected unknown job kind: " + kind);
     }
 }
 
@@ -304,19 +500,24 @@ uint64 WrittenSize(const string &in outPath) {
 
 // Returns one result line for one file.
 string ExtractOne(CSystemFidFile@ fid, const string &in path, bool hook = false) {
-    if (!IsFidValid(fid)) return "NOTFOUND\t" + path + "\tnot in the game files";
+    if (fid is null) return "NOTFOUND\t" + path + "\tnot in the game files\tmissing";
+    if (!IsFidValid(fid)) return "NOTFOUND\t" + path + "\tlisted by the game without data\tnodata";
+    if (S_LogFiles) print("Extracting " + path + (hook ? " (hook diagnostic)" : ""));
+    return TryExtract(fid, path, hook);
+}
+
+string TryExtract(CSystemFidFile@ fid, const string &in path, bool hook) {
     string outPath = IO::FromDataFolder("Extract/" + path);
     if (IO::FileExists(outPath)) IO::Delete(outPath);
     uint64 expected = fid.ByteSize;
-
-    print("Extracting " + path + (hook ? " (hook diagnostic)" : ""));
     bool extracted = Fids::Extract(fid, hook);
     uint64 written = WrittenSize(outPath);
-    if (!extracted && written == 0) return "FAIL\t" + path + "\tFids::Extract failed";
+    if (!extracted && written == 0) return "FAIL\t" + path + "\tFids::Extract failed\textract-false";
     if (expected > 0 && written != expected) {
-        return "SIZE\t" + path + "\twrote " + written + " of " + expected + " bytes";
+        return "SIZE\t" + path + "\twrote " + written + " of " + expected + " bytes\t"
+            + (written < expected ? "truncated" : "oversized");
     }
-    return "OK\t" + path + "\t" + written;
+    return "OK\t" + path + "\t" + written + (expected == 0 ? "\tunsized" : "");
 }
 
 void CountResult(const string &in line) {
@@ -348,23 +549,32 @@ array<string>@ RunExtract(array<string>@ requests, const string &in id = "", boo
             if (folder !is null && !CollectFolder(folder, path + "/", fids, paths)) {
                 fids.Resize(before);
                 paths.Resize(before);
-                lines.InsertLast("FAIL\t" + path + "/\tcannot enumerate a child folder; see Openplanet log");
+                lines.InsertLast("FAIL\t" + path + "/\tcannot enumerate a child folder; see Openplanet log\trejected");
                 continue;
             }
-            if (fids.Length == before) lines.InsertLast("NOTFOUND\t" + path + "/\tfolder not found or empty");
+            if (fids.Length == before) lines.InsertLast("NOTFOUND\t" + path + "/\tfolder not found or empty\tmissing");
         } else {
             fids.InsertLast(Fids::GetGame(path));
             paths.InsertLast(path);
         }
     }
     for (uint i = 0; i < lines.Length; i++) CountResult(lines[i]);
+    g_jobTotal = fids.Length;
+    uint64 frameStart = Time::Now;
     for (uint i = 0; i < fids.Length; i++) {
+        if (JobCancelled(id)) break;
+        g_jobDone = i;
+        g_jobFile = paths[i];
         Heartbeat(id, i, fids.Length, paths[i]);
         string result = ExtractOne(fids[i], paths[i], hook);
         CountResult(result);
         lines.InsertLast(result);
-        yield();
+        if (hook || Time::Now - frameStart >= FRAME_BUDGET) {
+            yield();
+            frameStart = Time::Now;
+        }
     }
+    g_jobDone = fids.Length;
     return lines;
 }
 
@@ -373,8 +583,11 @@ uint g_indexTotal = 0;
 bool IndexFolder(CSystemFidsFolder@ folder, const string &in prefix, array<string>@ chunk, const string &in id) {
     for (uint i = 0; i < folder.Leaves.Length; i++) {
         CSystemFidFile@ fid = folder.Leaves[i];
-        chunk.InsertLast(prefix + fid.FileName + "\t" + fid.ByteSize);
-        if (chunk.Length % 500 == 0) Heartbeat(id, g_indexTotal + chunk.Length, 0, "indexing");
+        chunk.InsertLast(prefix + fid.FileName + "\t" + fid.ByteSize + (IsFidValid(fid) ? "" : "\tnodata"));
+        if (chunk.Length % 500 == 0) {
+            g_jobDone = g_indexTotal + chunk.Length;
+            Heartbeat(id, g_jobDone, 0, "indexing");
+        }
         if (chunk.Length >= INDEX_CHUNK) {
             g_indexTotal += chunk.Length;
             Post("/api/plugin/jobs/" + id + "/index", Join(chunk, "\n"));
@@ -396,14 +609,14 @@ void RunIndex(const string &in id) {
     CSystemFidsFolder@ root = Fids::GetGameFolder("GameData");
     if (root is null) {
         Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\tgame folder not found");
-        NotifyProblem("Indexing failed: GameData folder not found");
+        ReportProblem("Indexing failed: GameData folder not found");
         return;
     }
     array<string> chunk;
     g_indexTotal = 0;
     if (!IndexFolder(root, "GameData/", chunk, id)) {
         Post("/api/plugin/jobs/" + id + "/result", "FAIL\tGameData/\tcannot enumerate a child folder; see Openplanet log");
-        NotifyProblem("Indexing failed: cannot enumerate a child folder");
+        ReportProblem("Indexing failed: cannot enumerate a child folder");
         return;
     }
     uint total = g_indexTotal;

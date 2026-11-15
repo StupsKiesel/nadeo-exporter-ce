@@ -7,6 +7,12 @@ The file browser's right-hand panel shows the import options, grouped into
 collapsible sections in Custom mode. The defaults give a good-looking result; this page
 explains every option so you can tune speed, detail and completeness.
 
+The dialog remembers your options. Each import started from it saves the
+current mode and settings, and the next import, also after restarting Blender,
+opens with them. They are stored in `map_import_options.json` in Blender's user
+config folder under `trackmania_blender_bridge`; delete that file to return to
+the defaults. Imports run from scripts don't change the saved options.
+
 ## Where game files come from
 
 A map file references hundreds of game assets that are not inside the map

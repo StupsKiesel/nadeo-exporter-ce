@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -41,6 +42,48 @@ def import_options(operator):
     content["spectator_occupancy"] /= 100.0
     content["terrain_grass_density"] /= 100.0
     return ImportOptions(**content, download_locators=operator.download_locators)
+
+
+SETTINGS_FILE = "map_import_options.json"
+_NOT_REMEMBERED = {"rna_type", "filepath", "filter_glob", "files", "directory", "filename", "from_dialog"}
+
+
+def settings_path():
+    folder = bpy.utils.user_resource("CONFIG", path="trackmania_blender_bridge", create=True)
+    return os.path.join(folder, SETTINGS_FILE)
+
+
+def _remembered(operator):
+    return [name for name in getattr(type(operator), "__annotations__", {}) if name not in _NOT_REMEMBERED]
+
+
+def load_settings(operator, path=None):
+    """Apply saved dialog options; unknown or invalid entries are ignored."""
+    try:
+        with open(path or settings_path(), encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except (OSError, ValueError):
+        return
+    if not isinstance(saved, dict):
+        return
+    for name in _remembered(operator):
+        if name in saved:
+            try:
+                setattr(operator, name, saved[name])
+            except (TypeError, ValueError):
+                log.warning("Ignoring saved map import option %s=%r", name, saved[name])
+
+
+def save_settings(operator, path=None):
+    path = path or settings_path()
+    data = {name: getattr(operator, name) for name in _remembered(operator)}
+    try:
+        temp = path + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+        os.replace(temp, path)
+    except (OSError, TypeError) as exc:
+        log.warning("Could not save map import options to %s: %s", path, exc)
 
 
 class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
@@ -160,6 +203,12 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         description="Retry incomplete or unreadable VegetTreeModel and Item.Gbx files once with Openplanet hook extraction; experimental and may crash Trackmania",
         default=False,
     )
+    from_dialog: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        load_settings(self)
+        self.from_dialog = True
+        return ImportHelper.invoke(self, context, event)
 
     def draw(self, context):
         from .. import ADDON_ID
@@ -266,6 +315,8 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         if not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"Map not found: {self.filepath}")
             return {"CANCELLED"}
+        if self.from_dialog:
+            save_settings(self)
         gamedata = _get_gamedata_dir(context)
         if not gamedata or not os.path.isdir(gamedata):
             self.report({"ERROR"}, f"Game library folder unavailable: {gamedata}")
@@ -281,6 +332,7 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         self._provider = LibraryProvider(
             gamedata, queue, fetch=self.fetch_missing,
             experimental_hooked_extraction=self.experimental_hooked_extraction,
+            extract_dir=_openplanet_bridge.extract_dir(),
         )
         self._started = time.perf_counter()
         try:

@@ -1,7 +1,8 @@
 """On-demand game files: the library folder backed by the Openplanet plugin.
 
 The library is the folder the plugin extracts into
-(``OpenplanetNext/Extract/GameData``). While a :class:`LibraryProvider` is
+(``OpenplanetNext/Extract/GameData``) or a custom folder; fetched files are
+then moved from the extract folder into it. While a :class:`LibraryProvider` is
 active (see :func:`activate`), the module-level helpers below replace
 ``os.path.isfile``/``isdir``/``listdir``/``os.walk`` for library paths:
 
@@ -24,7 +25,7 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
-from .index import GameIndex
+from .index import GameIndex, save_unavailable
 from .refs import external_references
 from .server import DONE, JobQueue
 
@@ -32,7 +33,8 @@ log = logging.getLogger("gbxbpy.library")
 
 # Files no import needs; skipping them keeps reference trees small.
 # Never needed for an import: audio, video and shader sources.
-_SKIP_SUFFIXES = (".sound.gbx", ".ogg", ".wav", ".webm", ".mux", ".hlsl")
+_SKIP_SUFFIXES = (".sound.gbx", ".ogg", ".wav", ".webm", ".mux", ".hlsl", ".phlsl.txt", ".vhlsl.txt")
+IMPORT_UNUSED_SUFFIXES = _SKIP_SUFFIXES
 # Normal extraction of these returns pack-encrypted bodies (vista
 # TerrainLayers_DNRM, fogger/sparkler effects); one hook extraction per file
 # returns the plain GBX.
@@ -51,18 +53,25 @@ class LibraryProvider:
     """Files under ``library_dir``, fetched from Trackmania when needed.
 
     Args:
-        library_dir: The GameData folder files are read from and extracted to.
+        library_dir: The GameData folder files are read from.
         queue: The bridge server's job queue; ``None`` reads the disk only.
         fetch: Request missing or broken files from the plugin.
         experimental_hooked_extraction: Allow hook-mode retries for failed tree-model and item extracts.
         request_timeout: Seconds to wait per request (plus a little per file).
+        extract_dir: The GameData folder the plugin extracts into
+            (``OpenplanetNext/Extract/GameData``). When it differs from
+            ``library_dir``, fetched files are moved into the library.
     """
 
     def __init__(self, library_dir: str, queue: Optional[JobQueue] = None, *, fetch: bool = True,
                  experimental_hooked_extraction: bool = False,
-                 request_timeout: float = 120.0) -> None:
+                 request_timeout: float = 120.0, extract_dir: Optional[str] = None) -> None:
         self.library_dir = os.path.normpath(os.path.abspath(library_dir))
         self._prefix = os.path.normcase(self.library_dir) + os.sep
+        self.extract_dir = (
+            os.path.normpath(os.path.abspath(extract_dir))
+            if extract_dir and _fold(extract_dir) != _fold(self.library_dir) else None
+        )
         self.queue = queue
         self.fetch_enabled = fetch and queue is not None
         self.experimental_hooked_extraction = experimental_hooked_extraction
@@ -142,6 +151,8 @@ class LibraryProvider:
         index = GameIndex(job.index_lines, game_version=job.game_version)
         try:
             index.save(self.library_dir)
+            if job.index_unavailable:
+                save_unavailable(self.library_dir, index.game_version, job.index_unavailable)
         except OSError as exc:
             log.warning("Cannot save the game index: %s", exc)
         self.index = index
@@ -191,20 +202,41 @@ class LibraryProvider:
         # The plugin's heartbeat keeps the job alive; this only bounds a hang.
         self.queue.wait(job, self.request_timeout + 2.0 * len(rels), cancelled=cancelled)
         self._set_status("")
+        moved_failures = self._move_into_library(job.results)
         by_path = {r.path.lower(): r for r in job.results}
         ok = 0
         for rel in rels:
             result = by_path.get(("GameData/" + rel).lower())
-            if job.state == DONE and result is not None and result.ok:
+            moved_failure = moved_failures.get(("GameData/" + rel).lower())
+            if job.state == DONE and result is not None and result.ok and moved_failure is None:
                 ok += 1
                 self.fetched.append(rel)
                 self.failed.pop(rel.lower(), None)
             else:
-                reason = f"{result.status}: {result.detail}" if result is not None else (job.error or "no result")
+                if moved_failure is not None:
+                    reason = f"not moved into the library: {moved_failure}"
+                elif result is not None:
+                    reason = f"{result.status}: {result.detail}"
+                else:
+                    reason = job.error or "no result"
                 self.failed[rel.lower()] = reason
                 log.warning("Fetch failed: %s (%s)", rel, reason)
         log.info("Fetched %d/%d files from Trackmania in %.2fs", ok, len(rels), time.perf_counter() - started)
         return ok
+
+    def _move_into_library(self, results) -> dict[str, str]:
+        """Move written files from the extract folder into the library; ``{lower path: reason}``."""
+        if self.extract_dir is None:
+            return {}
+        from .validate import install_extracted
+
+        # Only complete files go into the library; a SIZE result stays in the
+        # extract folder instead of replacing or adding a truncated library file.
+        written = [r for r in results if r.status == "OK"]
+        if not written:
+            return {}
+        _count, failed = install_extracted(self.library_dir, self.extract_dir, written, verify=False)
+        return {path.lower(): reason for path, reason in failed.items()}
 
     def ensure(self, path: str, *, probe: bool = False, tree: bool = True) -> bool:
         """True when ``path`` is on disk afterwards; fetches it when missing or broken.

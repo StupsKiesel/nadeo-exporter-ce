@@ -3,6 +3,11 @@
 **Nadeo Exporter CE** brings Trackmania (2020) maps and assets into Blender
 for **renders**, **cinematics** and **asset work**.
 
+[**Download addon v0.0.9 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.9/nadeo_exporter_ce_0.0.9.zip)
+| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.9)
+
+Install this ZIP in Blender; see the setup instructions below.
+
 ![Blender render of an imported Trackmania map with buildings, terrain and vegetation](doc/images/map-render.png)
 
 *An imported Trackmania map rendered in Blender.*
@@ -72,8 +77,8 @@ for **renders**, **cinematics** and **asset work**.
 ### 1. Install the packaged addon
 
 > [!IMPORTANT]
-> Download the addon ZIP from the project's GitHub **Releases**:
-> `nadeo_exporter_ce_<version>.zip`.
+> **[Download addon v0.0.9 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.9/nadeo_exporter_ce_0.0.9.zip)**,
+> then follow the installation steps below.
 > Do **not** install GitHub's **Code > Download ZIP** source archive.
 > Development packages additionally include a timestamp in their filename.
 

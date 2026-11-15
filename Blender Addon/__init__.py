@@ -22,7 +22,7 @@ ADDON_SHORT_NAME = "Nadeo Exporter CE"
 bl_info = {
     "name": "Nadeo Exporter Community Edition",
     "author": "StupsKiesel",
-    "version": (0, 0, 11),
+    "version": (0, 0, 12),
     "blender": (3, 6, 2),
     "location": "File > Import > Nadeo Exporter CE",
     "description": "Community preview: bring Nadeo GBX meshes and materials into Blender",
@@ -210,6 +210,11 @@ def configure_logging(level_name: str = "INFO") -> logging.Logger:
 log = configure_logging()
 
 
+def _on_include_prereleases_changed(_self, _context) -> None:
+    # A found update may no longer match the selected channel.
+    _tools_panel.reset_update_state()
+
+
 def _on_log_level_changed(self, _context) -> None:
     configure_logging(self.log_level)
     _configure_file_logging(self)
@@ -353,6 +358,16 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
         default="",
     )
 
+    include_prereleases: BoolProperty(
+        name="Include Pre-releases",
+        description=(
+            "Also offer GitHub pre-releases (preview versions) as updates. "
+            "When off, only full releases are offered"
+        ),
+        default=True,
+        update=_on_include_prereleases_changed,
+    )
+
     parse_cache_dir: StringProperty(
         name="Parse Cache Directory",
         description=(
@@ -409,6 +424,8 @@ def _draw_settings(layout, prefs) -> None:
     row = box.row()
     row.label(text="Updates", icon="FILE_REFRESH")
     _tools_panel.draw_github_actions(row)
+    box.prop(prefs, "include_prereleases")
+    _tools_panel.draw_update_status(box)
 
     box = layout.box()
     _draw_logging(box, prefs)
@@ -3263,91 +3280,103 @@ class TMBRIDGE_OT_UpgradeFromBuild(bpy.types.Operator):
             return {"CANCELLED"}
 
         newest = max(zips, key=os.path.getmtime)
-        zip_name = os.path.basename(newest)
+        install_addon_zip(addon, newest)
+        self.report({"INFO"}, f"Upgrading to {os.path.basename(newest)}...")
+        return {"FINISHED"}
 
-        pkg = ADDON_ID
 
-        # Snapshot preferences BEFORE the upgrade. Re-registering the addon
-        # resets AddonPreferences PropertyGroup defaults, so we must save and
-        # restore the user's settings (game data dir, build dir, etc.).
-        prefs_snapshot: dict = {}
-        try:
-            prefs_obj = addon.preferences
-            for prop in prefs_obj.bl_rna.properties:
-                if prop.identifier == "rna_type" or prop.is_readonly:
-                    continue
-                try:
-                    prefs_snapshot[prop.identifier] = getattr(prefs_obj, prop.identifier)
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception as e:  # noqa: BLE001
-            print(f"[trackmania_blender_bridge] failed to snapshot prefs: {e}")
+def install_addon_zip(addon, zip_path: str, cleanup=None) -> None:
+    """Install ``zip_path`` over the running addon and re-enable it in place.
 
-        # IMPORTANT: do NOT call addon_disable here. This operator's class is
-        # owned by `pkg`, so disabling now would unregister the very class
-        # whose execute() is currently running -> Blender segfault.
-        # Defer the entire disable -> purge -> install -> enable sequence so
-        # this operator returns first and the C-side operator wrapper is no
-        # longer on the call stack.
-        def _deferred_upgrade():
+    ``cleanup`` is called after the install attempt, e.g. to delete a
+    downloaded temporary ZIP.
+    """
+    pkg = ADDON_ID
+
+    # Snapshot preferences BEFORE the upgrade. Re-registering the addon
+    # resets AddonPreferences PropertyGroup defaults, so we must save and
+    # restore the user's settings (game data dir, build dir, etc.).
+    prefs_snapshot: dict = {}
+    try:
+        prefs_obj = addon.preferences
+        for prop in prefs_obj.bl_rna.properties:
+            if prop.identifier == "rna_type" or prop.is_readonly:
+                continue
             try:
-                try:
-                    bpy.ops.preferences.addon_disable(module=pkg)
-                except Exception:  # noqa: BLE001
-                    pass
+                prefs_snapshot[prop.identifier] = getattr(prefs_obj, prop.identifier)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[trackmania_blender_bridge] failed to snapshot prefs: {e}")
 
-                # Purge cached modules so new code is picked up on re-enable.
-                # GBXMAT must go too: a stale registry/builder set paired with
-                # a new adapter yields magenta fallback materials.
-                prefixes = ("gbxbpy.", "nice.", "GBXBPY.", "NICE.", "GBXMAT.", pkg + ".")
-                roots = {"gbxbpy", "nice", "GBXBPY", "NICE", "GBXMAT", pkg}
-                for mod_name in [
-                    k for k in list(sys.modules)
-                    if k in roots or any(k.startswith(p) for p in prefixes)
-                ]:
-                    del sys.modules[mod_name]
+    # IMPORTANT: do NOT call addon_disable here. The calling operator's class
+    # is owned by `pkg`, so disabling now would unregister the very class
+    # whose execute() is currently running -> Blender segfault.
+    # Defer the entire disable -> purge -> install -> enable sequence so
+    # the operator returns first and the C-side operator wrapper is no
+    # longer on the call stack.
+    def _deferred_upgrade():
+        try:
+            try:
+                bpy.ops.preferences.addon_disable(module=pkg)
+            except Exception:  # noqa: BLE001
+                pass
 
-                try:
-                    bpy.ops.preferences.addon_install(
-                        filepath=newest, overwrite=True
-                    )
-                except Exception as e:  # noqa: BLE001
-                    print(f"[trackmania_blender_bridge] install failed: {e}")
-                    return None
+            # Purge cached modules so new code is picked up on re-enable.
+            # GBXMAT must go too: a stale registry/builder set paired with
+            # a new adapter yields magenta fallback materials.
+            prefixes = ("gbxbpy.", "nice.", "GBXBPY.", "NICE.", "GBXMAT.", pkg + ".")
+            roots = {"gbxbpy", "nice", "GBXBPY", "NICE", "GBXMAT", pkg}
+            for mod_name in [
+                k for k in list(sys.modules)
+                if k in roots or any(k.startswith(p) for p in prefixes)
+            ]:
+                del sys.modules[mod_name]
 
-                try:
-                    bpy.ops.preferences.addon_enable(module=pkg)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[trackmania_blender_bridge] enable failed: {e}")
+            try:
+                bpy.ops.preferences.addon_install(
+                    filepath=zip_path, overwrite=True
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[trackmania_blender_bridge] install failed: {e}")
+                return None
 
-                # Restore the snapshotted preferences.
-                try:
-                    new_addon = bpy.context.preferences.addons.get(pkg)
-                    if new_addon is not None and prefs_snapshot:
-                        new_prefs = new_addon.preferences
-                        for k, v in prefs_snapshot.items():
-                            try:
-                                setattr(new_prefs, k, v)
-                            except Exception:  # noqa: BLE001
-                                pass
+            try:
+                bpy.ops.preferences.addon_enable(module=pkg)
+            except Exception as e:  # noqa: BLE001
+                print(f"[trackmania_blender_bridge] enable failed: {e}")
+
+            # Restore the snapshotted preferences.
+            try:
+                new_addon = bpy.context.preferences.addons.get(pkg)
+                if new_addon is not None and prefs_snapshot:
+                    new_prefs = new_addon.preferences
+                    for k, v in prefs_snapshot.items():
                         try:
-                            bpy.ops.wm.save_userpref()
+                            setattr(new_prefs, k, v)
                         except Exception:  # noqa: BLE001
                             pass
-                except Exception as e:  # noqa: BLE001
-                    print(f"[trackmania_blender_bridge] failed to restore prefs: {e}")
-
-                # Force the next preferences draw to re-check.
-                global _upgrade_check_time
-                _upgrade_check_time = 0.0
+                    try:
+                        bpy.ops.wm.save_userpref()
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception as e:  # noqa: BLE001
-                print(f"[trackmania_blender_bridge] upgrade failed: {e}")
-            return None
+                print(f"[trackmania_blender_bridge] failed to restore prefs: {e}")
 
-        bpy.app.timers.register(_deferred_upgrade, first_interval=0.1)
+            # Force the next preferences draw to re-check.
+            global _upgrade_check_time
+            _upgrade_check_time = 0.0
+        except Exception as e:  # noqa: BLE001
+            print(f"[trackmania_blender_bridge] upgrade failed: {e}")
+        finally:
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception:  # noqa: BLE001
+                    pass
+        return None
 
-        self.report({"INFO"}, f"Upgrading to {zip_name}...")
-        return {"FINISHED"}
+    bpy.app.timers.register(_deferred_upgrade, first_interval=0.1)
 
 
 def menu_func_import(self, _context) -> None:
@@ -4147,6 +4176,7 @@ def register() -> None:
     gbx_props.register()
     _blendermania_items.register()
     _embedded_items.register()
+    _tools_panel.register()
 
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
@@ -4187,6 +4217,7 @@ def unregister() -> None:
     if _batch_items._running is not None:
         _batch_items._running.cancel(bpy.context)
     _embedded_items.unregister()
+    _tools_panel.unregister()
     _blendermania_items.unregister()
     log.info("%s unregistering", ADDON_NAME)
     _file_logging.unregister()

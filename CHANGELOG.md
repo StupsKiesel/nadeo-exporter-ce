@@ -2,6 +2,17 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.12] - 2026-11-15
+
+### Added
+
+- **Install updates from Blender.** When a newer version is found, the
+  Check for Updates button turns into an Install button labelled as a release
+  or a pre-release. It downloads the addon ZIP from GitHub after a
+  confirmation and installs it in place, keeping your settings. Updates are
+  checked once automatically at startup. Pre-releases are offered too unless
+    you turn off the new **Include Pre-releases** preference.
+
 ## [0.0.11] - 2026-11-15
 
 ### Fixed
@@ -49,6 +60,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.12]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.12
 [0.0.11]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.11
 [0.0.10]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.10
 [0.0.9]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.9

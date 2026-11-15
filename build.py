@@ -6,7 +6,7 @@ Usage:
 
 Output:
     build/nadeo_exporter_ce_<version>_<timestamp>.zip
-    build/nadeo_exporter_ce_<version>.zip (--release, no live install)
+    dist/nadeo_exporter_ce_<version>.zip (--release, no live install)
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ GBXMAT_DIR = ROOT / "GBXMAT"
 GPUUI_DIR = ROOT / "gpuui"
 OPENPLANET_PLUGIN_DIR = ROOT / "Openplanet Plugin"
 BUILD_DIR = ROOT / "build"
+RELEASE_DIR = ROOT / "dist"
 
 # This becomes the addon package directory name inside the zip.
 ADDON_PACKAGE = "trackmania_blender_bridge"
@@ -149,9 +150,10 @@ def build(*, release: bool = False) -> Path:
 
     version = get_version()
     suffix = "" if release else f"_{build_id()}"
-    zip_path = BUILD_DIR / f"{ARCHIVE_PREFIX}_{version}{suffix}.zip"
+    output_dir = RELEASE_DIR if release else BUILD_DIR
+    zip_path = output_dir / f"{ARCHIVE_PREFIX}_{version}{suffix}.zip"
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     files = collect_files()
     if not files:
@@ -174,7 +176,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--release", action="store_true",
-        help="Build a version-only archive without installing into Blender.",
+        help="Build a version-only archive in dist without installing into Blender.",
     )
     args = parser.parse_args()
     build(release=args.release)

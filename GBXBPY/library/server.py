@@ -61,7 +61,7 @@ class FileResult:
     path: str
     detail: str = ""
     # Plugin 2.2+: missing, nodata, truncated, oversized, extract-false,
-    # unsized or rejected; empty for older plugins.
+    # timeout (2.2.1+), unsized or rejected; empty for older plugins.
     reason: str = ""
 
     @property

@@ -59,8 +59,8 @@ Blender logo in the Openplanet menu bar turns green.
 ## During imports
 
 - The Blender logo turns blue while a request runs, with a thin progress line
-  under it. After the batch, its panel shows *Extracted N files*. An orange
-  warning icon briefly marks failed files; the panel shows the first one, and
+  under it. After the batch, its panel shows *Extracted N files*. The logo
+  briefly turns red when files failed; the panel shows the first one, and
   `Openplanet.log` lists them all.
 - Files that cannot be provided are reported by the import and become
   [placeholders](importing-maps.md#partial-imports-and-placeholders); you can
@@ -77,11 +77,11 @@ menu bar (`F3`). Its colour shows the status:
 |---|---|
 | Green | Connected to Blender |
 | Blue | A request is running |
+| Red | Files failed in the last request (for 30 seconds) |
 | Light grey | Waiting for Blender |
 | Dark grey | Listening is switched off |
 
-An orange warning icon appears next to it for 30 seconds when files failed
-in a request; the panel keeps showing the first failure afterwards.
+The panel keeps showing the first failure after the logo is no longer red.
 While a request runs, a thin blue line under the logo shows its progress.
 Hover over the logo for the status. Click it to open or close a small panel
 fixed below the top-right corner:
@@ -115,4 +115,5 @@ it in Openplanet.
 | *Waiting for Trackmania* never becomes *Connected* | Is the game running with Openplanet? Is signature mode set to *Developer*? Was the plugin reloaded after installing? |
 | Plugin not listed in Openplanet | Click **Install Plugin** again and check `OpenplanetNext\Plugins\BlenderBridgeExtractor` exists; then reload plugins. |
 | Imports report missing or incomplete files although connected | Check the plugin summary and `Openplanet.log`. Re-importing retries normal extraction; for incomplete or unreadable `VegetTreeModel` or `Item.Gbx` files, enable **Experimental Hooked Extraction** in the map import options. Hook extraction is experimental and may crash Trackmania. |
+| `Script execution timeout exceeded` in `Openplanet.log` | One file took longer to extract than Openplanet's script timeout (1 second by default), which happens on slow disks or under Proton/Wine. Since plugin 2.2.1 the plugin keeps going with the next file, and Blender retries the file if it is missing. Older plugins stop until reloaded: click **Update Plugin** in Blender and reload it. |
 | You cannot run the game and Blender together | Use a pre-extracted GameData folder as **Game Library** instead — see [preferences](preferences.md). |

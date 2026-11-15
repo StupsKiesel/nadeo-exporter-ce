@@ -15,7 +15,7 @@
 // any data, never extractable). Results go to POST /api/plugin/jobs/<id>/result
 // as "STATUS<TAB>path<TAB>detail[<TAB>reason]" lines: STATUS is OK, SIZE, FAIL
 // or NOTFOUND; the OK detail is the written size; reason is one of missing,
-// nodata, truncated, oversized, extract-false, unsized, rejected.
+// nodata, truncated, oversized, extract-false, timeout, unsized, rejected.
 // While a job runs, POST /api/plugin/jobs/<id>/progress
 // ("done<TAB>total<TAB>message") tells Blender the plugin is still alive; a
 // 404 answer means Blender cancelled or forgot the job, which stops it.
@@ -36,14 +36,14 @@ string S_ServerUrl = "http://127.0.0.1:1337";
 [Setting category="General" name="Log every extracted file" description="Failures are always logged."]
 bool S_LogFiles = true;
 
-const string PLUGIN_VERSION = "2.2.0";
+const string PLUGIN_VERSION = "2.2.1";
 const string TITLE = "Blender Bridge";
 const uint INDEX_CHUNK = 5000;
 // Extract files back to back for up to this many ms before yielding a frame.
 const uint64 FRAME_BUDGET = 8;
 // Seconds to wait for a follow-up job before a batch counts as finished.
 const int BATCH_GAP = 3;
-// How long the menu bar keeps the warning icon after a batch with failures.
+// How long the menu bar logo stays red after a batch with failures.
 const uint64 FAILURE_ICON_TIME = 30000;
 
 bool g_connected = false;
@@ -200,28 +200,19 @@ void Pause() {
     g_connected = false;
 }
 
-// The menu bar shows a white Blender silhouette tinted by status (dark grey
-// when listening is off), plus a warning icon for a while after a batch had
-// failures.
+// The menu bar shows a white Blender silhouette tinted by status: dark grey
+// when listening is off, red for a while after a batch had failures.
 // Logo tint as 0xRRGGBBAA; `textColor` is the same colour as a format code.
 uint LogoColor(string &out textColor) {
     if (!S_Enabled) { textColor = "\\$555"; return 0x555555FF; }
     if (g_jobKind.Length > 0) { textColor = "\\$4af"; return 0x44AAFFFF; }
+    if (g_lastFailure.Length > 0 && Time::Now - g_lastFailureAt < FAILURE_ICON_TIME) {
+        textColor = "\\$f44";
+        return 0xFF4444FF;
+    }
     if (g_connected) { textColor = "\\$4f8"; return 0x44FF88FF; }
     textColor = "\\$ccc";
     return 0xCCCCCCFF;
-}
-
-// Returns the coloured icons after the logo; `plain` gets the uncoloured
-// text, used to measure its width.
-string MenuIcons(string &out plain) {
-    plain = "";
-    if (S_Enabled && g_jobKind.Length == 0 && g_lastFailure.Length > 0
-            && Time::Now - g_lastFailureAt < FAILURE_ICON_TIME) {
-        plain = " " + Icons::ExclamationTriangle;
-        return " \\$f80" + Icons::ExclamationTriangle + "\\$z";
-    }
-    return "";
 }
 
 string StatusLine() {
@@ -244,8 +235,7 @@ void RenderMenuMain() {
     // Draw at the right end of the menu bar, then put the cursor back so
     // plugins drawn after this one keep their place on the left.
     vec2 start = UI::GetCursorPos();
-    string plain;
-    string label = MenuIcons(plain);
+    string plain = "";
     string textColor;
     uint logoColor = LogoColor(textColor);
     float lineHeight = UI::MeasureString("A").y;
@@ -255,11 +245,11 @@ void RenderMenuMain() {
     string pad = "";
     if (g_logo is null) {
         pad = textColor + "Blender\\$z";
-        plain = "Blender" + plain;
+        plain = "Blender";
     } else {
         float space = Math::Max(UI::MeasureString(" ").x, 1.0f);
         while (UI::MeasureString(pad).x < logoSize + space) pad += " ";
-        plain = pad + plain;
+        plain = pad;
     }
     float spacing = UI::GetStyleVarVec2(UI::StyleVar::ItemSpacing).x;
     float width = UI::MeasureString(plain).x + spacing;
@@ -269,7 +259,7 @@ void RenderMenuMain() {
         UI::GetWindowDrawList().AddImage(g_logo, pos, vec2(logoSize, logoSize), logoColor);
     }
     UI::SetCursorPos(vec2(x, start.y));
-    if (UI::MenuItem(pad + label + "###BlenderBridgeMenu", "", g_panelOpen)) g_panelOpen = !g_panelOpen;
+    if (UI::MenuItem(pad + "###BlenderBridgeMenu", "", g_panelOpen)) g_panelOpen = !g_panelOpen;
     float progress = JobProgress();
     if (progress >= 0) {
         // Thin progress line along the bottom edge of the menu item.
@@ -283,7 +273,7 @@ void RenderMenuMain() {
         UI::Text(TITLE);
         UI::Text(StatusLine());
         if (g_jobKind.Length > 0) UI::Text(JobLine());
-        else if (g_lastFailure.Length > 0) UI::Text("\\$f80" + Icons::ExclamationTriangle + "\\$z " + g_lastSummary);
+        else if (g_lastFailure.Length > 0) UI::Text("\\$f44" + Icons::ExclamationTriangle + "\\$z " + g_lastSummary);
         UI::EndTooltip();
     }
     g_barRight = UI::GetWindowPos().x + UI::GetWindowSize().x;
@@ -348,7 +338,7 @@ void RenderPanelContent() {
         if (g_jobFile.Length > 0) UI::TextDisabled(g_jobFile);
     } else if (g_lastSummary.Length > 0) {
         UI::Text("Last: " + g_lastSummary);
-        if (g_lastFailure.Length > 0) UI::TextWrapped("\\$f80" + Icons::ExclamationTriangle + "\\$z " + g_lastFailure);
+        if (g_lastFailure.Length > 0) UI::TextWrapped("\\$f44" + Icons::ExclamationTriangle + "\\$z " + g_lastFailure);
     }
 
     UI::SeparatorText("Settings");
@@ -513,6 +503,10 @@ string TryExtract(CSystemFidFile@ fid, const string &in path, bool hook) {
     bool extracted = Fids::Extract(fid, hook);
     uint64 written = WrittenSize(outPath);
     if (!extracted && written == 0) return "FAIL\t" + path + "\tFids::Extract failed\textract-false";
+    return WrittenResult(path, expected, written);
+}
+
+string WrittenResult(const string &in path, uint64 expected, uint64 written) {
     if (expected > 0 && written != expected) {
         return "SIZE\t" + path + "\twrote " + written + " of " + expected + " bytes\t"
             + (written < expected ? "truncated" : "oversized");
@@ -560,22 +554,65 @@ array<string>@ RunExtract(array<string>@ requests, const string &in id = "", boo
     }
     for (uint i = 0; i < lines.Length; i++) CountResult(lines[i]);
     g_jobTotal = fids.Length;
+    ExtractRun run;
+    @run.fids = fids;
+    @run.paths = paths;
+    run.id = id;
+    run.hook = hook;
+    // Openplanet aborts a coroutine that runs past its script timeout
+    // (1 second by default) without yielding, even inside one slow
+    // Fids::Extract call (seen on Proton/Wine). Only that coroutine dies, so
+    // the files are extracted by a worker; when it dies, the file it was on is
+    // judged by what landed on disk and a new worker takes the rest.
+    while (run.results.Length < fids.Length && !JobCancelled(id)) {
+        await(startnew(ExtractWorker, run));
+        uint i = run.results.Length;
+        if (i >= fids.Length || JobCancelled(id)) break;
+        warn("Extracting " + paths[i] + " exceeded Openplanet's script timeout; continuing with the next file");
+        run.results.InsertLast(TimedOutResult(fids[i], paths[i]));
+    }
+    for (uint i = 0; i < run.results.Length; i++) {
+        CountResult(run.results[i]);
+        lines.InsertLast(run.results[i]);
+    }
+    g_jobDone = fids.Length;
+    return lines;
+}
+
+class ExtractRun {
+    array<CSystemFidFile@>@ fids;
+    array<string>@ paths;
+    // One result line per finished file, in order; its length is the index
+    // of the file the worker is on.
+    array<string> results;
+    string id;
+    bool hook = false;
+}
+
+void ExtractWorker(ref@ data) {
+    ExtractRun@ run = cast<ExtractRun>(data);
     uint64 frameStart = Time::Now;
-    for (uint i = 0; i < fids.Length; i++) {
-        if (JobCancelled(id)) break;
+    while (run.results.Length < run.fids.Length) {
+        if (JobCancelled(run.id)) return;
+        uint i = run.results.Length;
         g_jobDone = i;
-        g_jobFile = paths[i];
-        Heartbeat(id, i, fids.Length, paths[i]);
-        string result = ExtractOne(fids[i], paths[i], hook);
-        CountResult(result);
-        lines.InsertLast(result);
-        if (hook || Time::Now - frameStart >= FRAME_BUDGET) {
+        g_jobFile = run.paths[i];
+        Heartbeat(run.id, i, run.fids.Length, run.paths[i]);
+        run.results.InsertLast(ExtractOne(run.fids[i], run.paths[i], run.hook));
+        if (run.hook || Time::Now - frameStart >= FRAME_BUDGET) {
             yield();
             frameStart = Time::Now;
         }
     }
-    g_jobDone = fids.Length;
-    return lines;
+}
+
+// Result for a file whose worker was aborted. A native call cannot be
+// interrupted, and the worker yields before starting a file once its frame
+// budget is spent, so the abort came after Fids::Extract returned.
+string TimedOutResult(CSystemFidFile@ fid, const string &in path) {
+    uint64 written = WrittenSize(IO::FromDataFolder("Extract/" + path));
+    if (written == 0) return "FAIL\t" + path + "\tscript timeout while extracting\ttimeout";
+    return WrittenResult(path, fid is null ? 0 : fid.ByteSize, written);
 }
 
 uint g_indexTotal = 0;

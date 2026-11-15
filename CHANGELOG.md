@@ -2,6 +2,22 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.14] - 2026-11-15
+
+### Changed
+
+- **Cleaner Openplanet menu bar.** Instead of a separate warning icon, the
+  Blender logo turns red for 30 seconds when files failed.
+
+### Fixed
+
+- **The extractor plugin no longer stops on a slow file.** When one file took
+  longer than Openplanet's script timeout (1 second by default, often hit
+  under Proton/Wine or on slow disks), Openplanet aborted the plugin with
+  "Script execution timeout exceeded" until it was reloaded. The plugin
+  (2.2.1) now checks that file and continues with the next one. Click
+  **Update Plugin** in Blender to install it.
+
 ## [0.0.13] - 2026-11-15
 
 ### Added
@@ -112,6 +128,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.14]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.14
 [0.0.13]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13
 [0.0.12]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.12
 [0.0.11]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.11

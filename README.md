@@ -3,8 +3,8 @@
 **Nadeo Exporter CE** brings Trackmania (2020) maps and assets into Blender
 for **renders**, **cinematics** and **asset work**.
 
-[**Download addon v0.0.13 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.13/nadeo_exporter_ce_0.0.13.zip)
-| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13)
+[**Download addon v0.0.14 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.14/nadeo_exporter_ce_0.0.14.zip)
+| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.14)
 | [Changelog](CHANGELOG.md)
 
 Install this ZIP in Blender; see the setup instructions below.
@@ -14,7 +14,7 @@ Install this ZIP in Blender; see the setup instructions below.
 *An imported Trackmania map rendered in Blender.*
 
 > [!NOTE]
-> **Version 0.0.13 is a public preview.** Mesh, material and environment
+> **Version 0.0.14 is a public preview.** Mesh, material and environment
 > fidelity is still being refined. Unsupported or unavailable content can
 > become placeholders. This is an import and preview tool: **writing GBX
 > files and exporting edited maps back to Trackmania are not supported**.
@@ -78,7 +78,7 @@ Install this ZIP in Blender; see the setup instructions below.
 ### 1. Install the packaged addon
 
 > [!IMPORTANT]
-> **[Download addon v0.0.13 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.13/nadeo_exporter_ce_0.0.13.zip)**,
+> **[Download addon v0.0.14 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.14/nadeo_exporter_ce_0.0.14.zip)**,
 > then follow the installation steps below.
 > Do **not** install GitHub's **Code > Download ZIP** source archive.
 > Development packages additionally include a timestamp in their filename.
@@ -417,9 +417,9 @@ or write GBX files.
 | Skins or signs are missing | Check Trackmania/User Files paths, map skin options, and whether downloads are allowed. |
 | Imports use too much memory or take too long | Lower texture size/detail and disable optional grass, spectators and extra LODs. |
 
-A batch can extract some files successfully while others fail. An orange
-warning icon next to the Blender logo in the Openplanet menu bar briefly marks
-failed files; its panel shows the first failure. Read the individual results rather
+A batch can extract some files successfully while others fail. The Blender
+logo in the Openplanet menu bar briefly turns red when files failed; its
+panel shows the first failure. Read the individual results rather
 than treating the whole batch as successful.
 Openplanet's current log is normally `%USERPROFILE%\OpenplanetNext\Openplanet.log`.
 

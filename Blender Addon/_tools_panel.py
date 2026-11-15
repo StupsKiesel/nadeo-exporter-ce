@@ -152,7 +152,8 @@ def _github_release_api_url():
         r"[A-Za-z0-9_.-]+", repository
     ):
         return None
-    return f"https://api.github.com/repos/{owner}/{repository}/releases/latest"
+    # The list endpoint, unlike /releases/latest, includes pre-releases.
+    return f"https://api.github.com/repos/{owner}/{repository}/releases?per_page=100"
 
 
 def _parse_release_version(tag):
@@ -160,6 +161,19 @@ def _parse_release_version(tag):
         return None
     match = _RELEASE_VERSION.fullmatch(tag)
     return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _newest_release(releases):
+    """Return ``(tag, version)`` of the highest published release, or None."""
+    newest = None
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        tag = release.get("tag_name")
+        version = _parse_release_version(tag)
+        if version is not None and (newest is None or version > newest[1]):
+            newest = (tag, version)
+    return newest
 
 
 class TMBRIDGE_OT_CheckGitHubRelease(bpy.types.Operator):
@@ -186,7 +200,7 @@ class TMBRIDGE_OT_CheckGitHubRelease(bpy.types.Operator):
         )
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
-                release = json.loads(response.read().decode("utf-8"))
+                releases = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             log.warning("GitHub release check returned HTTP %s", exc.code)
             self.report({"ERROR"}, f"GitHub release check failed (HTTP {exc.code}).")
@@ -200,14 +214,14 @@ class TMBRIDGE_OT_CheckGitHubRelease(bpy.types.Operator):
             self.report({"ERROR"}, "GitHub returned an invalid release response.")
             return {"CANCELLED"}
 
-        if not isinstance(release, dict):
+        if not isinstance(releases, list):
             self.report({"ERROR"}, "GitHub returned an invalid release response.")
             return {"CANCELLED"}
-        tag = release.get("tag_name")
-        latest_version = _parse_release_version(tag)
-        if latest_version is None:
-            self.report({"ERROR"}, "The latest GitHub release has an unsupported version tag.")
+        newest = _newest_release(releases)
+        if newest is None:
+            self.report({"WARNING"}, "No published GitHub release with a version tag was found.")
             return {"CANCELLED"}
+        tag, latest_version = newest
 
         from . import bl_info
 

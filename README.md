@@ -298,6 +298,11 @@ rather than separate mesh copies.
 **Viewport Options** provides viewport controls, and **Open GBX Inspector**
 opens a parsed-data browser.
 
+**Check for Updates** checks for a newer stable GitHub release without
+installing it. **Open GitHub Repository** opens the project page in your browser.
+Update checks require the repository to be public and have a published stable
+release; the addon does not authenticate to private repositories.
+
 **Batch Processor is disabled until GBX writing is supported.**
 Developer UI is optional and intended for debugging, not first-run setup.
 

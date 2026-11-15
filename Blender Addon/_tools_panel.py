@@ -14,7 +14,7 @@ from . import ADDON_SHORT_NAME
 
 log = logging.getLogger("trackmania_blender_bridge.tools")
 OP = "trackmania_blender_bridge."
-GITHUB_REPOSITORY_URL = ""
+GITHUB_REPOSITORY_URL = "https://github.com/StupsKiesel/nadeo-exporter-ce"
 _RELEASE_VERSION = re.compile(r"^[vV]?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
 
 

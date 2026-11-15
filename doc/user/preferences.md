@@ -36,8 +36,10 @@ readable paths.
 
 **Check for Updates** checks the latest GitHub release and reports whether it
 is newer than the installed addon; it does not download or install updates.
-**Open GitHub Repository** opens the project page in a browser. Both controls
-are disabled until a valid repository URL is configured in `_tools_panel.py`.
+**Open GitHub Repository** opens
+[nadeo-exporter-ce](https://github.com/StupsKiesel/nadeo-exporter-ce) in a browser.
+Update checks require a public repository with a published stable release;
+the addon does not authenticate to private repositories.
 **Upgrade Folder** remains developer-only for local build ZIPs.
 
 ## Python Dependencies

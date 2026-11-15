@@ -66,6 +66,20 @@ class Resolver:
 
         normalised = ref_path.replace("/", os.sep).replace("\\", os.sep)
 
+        # Absolute paths are used as-is. Stripping their root would nest them
+        # below GameData on POSIX ("GameData/home/user/.wine/.../GameData/...");
+        # only the part after a ``GameData`` folder is retried below.
+        if os.path.isabs(normalised):
+            candidate = os.path.normpath(normalised)
+            if (library.isfile if probe else library.ensure)(candidate):
+                return candidate
+            parts = candidate.split(os.sep)
+            folded = [part.casefold() for part in parts]
+            if "gamedata" not in folded:
+                return None
+            index = len(folded) - 1 - folded[::-1].index("gamedata")
+            normalised = os.sep.join(parts[index + 1:])
+
         # 1) `..`-prefixed paths resolve against the source file's directory.
         if ".." in normalised and source_path:
             candidate = os.path.normpath(

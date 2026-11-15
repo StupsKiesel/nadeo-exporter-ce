@@ -11,6 +11,17 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
   64×64 or 128×128 map using the 48×48 stadium) had the stands, screens and
   surroundings shifted by hundreds of metres. The stadium is now placed on
   the decoration's own 48×48 field at the map origin, as in game.
+- **Custom items with a Scale layer imported at the wrong size.** Scale
+  layers set in the item editor's mesh modeller were ignored, so such items
+  appeared too big, too small or stretched (for example a rock imported at
+  twice its size, covering a whole village). The scale is now applied around
+  the item origin, or around each part's centre when "scale each part
+  independently" is set.
+- **Wrong file requests on Linux (Wine/Proton).** Absolute file paths were
+  re-rooted below the library, so Trackmania was asked for files like
+  `GameData/home/user/.wine/.../GameData/Stadium/...` that cannot exist.
+  Absolute paths are now looked up as they are, falling back to their
+  GameData-relative part.
 
 ## [0.0.10] - 2026-11-15
 

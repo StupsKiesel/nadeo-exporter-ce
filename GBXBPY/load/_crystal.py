@@ -371,6 +371,46 @@ def _apply_translation_layer(
     return new_positions, new_faces
 
 
+def _apply_scale_layer(
+    raw_positions: List[tuple],
+    faces_simple: List[dict],
+    scale_inner: Any,
+) -> tuple:
+    """Scale the geometry per axis about the item origin.
+
+    With ``independently`` each connected part is scaled about its own
+    bounding-box centre instead. A mirroring (negative) scale reverses the
+    face winding so normals keep pointing outward.
+    """
+    s = getattr(scale_inner, "scale", None)
+    factors = tuple(
+        float(getattr(s, axis, 1.0)) if s is not None else 1.0 for axis in "xyz"
+    )
+    if factors == (1.0, 1.0, 1.0) or not raw_positions:
+        return raw_positions, faces_simple
+
+    centres = [(0.0, 0.0, 0.0)] * len(raw_positions)
+    if bool(getattr(scale_inner, "independently", False)):
+        for comp in _connected_components(raw_positions, faces_simple):
+            centre = tuple(
+                (min(raw_positions[i][a] for i in comp) + max(raw_positions[i][a] for i in comp)) / 2.0
+                for a in range(3)
+            )
+            for i in comp:
+                centres[i] = centre
+
+    new_positions = [
+        tuple(c[a] + (p[a] - c[a]) * factors[a] for a in range(3))
+        for p, c in zip(raw_positions, centres)
+    ]
+    if factors[0] * factors[1] * factors[2] < 0:
+        faces_simple = [
+            {**f, "inds": list(reversed(f["inds"])), "uvs": list(reversed(f["uvs"]))}
+            for f in faces_simple
+        ]
+    return new_positions, faces_simple
+
+
 def _apply_modifier_layers(
     raw_positions: List[tuple],
     faces_simple: List[dict],
@@ -379,10 +419,10 @@ def _apply_modifier_layers(
     geom_layer_id: str,
 ) -> tuple:
     """Walk modifier layers above ``geom_layer_index`` in the layer stack
-    and apply Mirror/Translation operations to the geometry buffer.
+    and apply Mirror/Translation/Scale operations to the geometry buffer.
 
     Stops at the first Deformation layer (handled by the deformation
-    pipeline downstream). Rotation/Scale/Smooth/Subdivide/Chaos are not
+    pipeline downstream). Rotation/Smooth/Subdivide/Chaos are not
     yet implemented and are logged + skipped so callers can spot which
     items still need work.
     """
@@ -423,6 +463,14 @@ def _apply_modifier_layers(
             )
             log.debug(
                 "Crystal: applied Translation layer %r to geometry %r",
+                getattr(layer, "name", ""), geom_layer_id,
+            )
+        elif ltype == "Scale":
+            raw_positions, faces_simple = _apply_scale_layer(
+                raw_positions, faces_simple, inner,
+            )
+            log.debug(
+                "Crystal: applied Scale layer %r to geometry %r",
                 getattr(layer, "name", ""), geom_layer_id,
             )
         else:

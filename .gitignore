@@ -24,6 +24,8 @@ Extract/
 .bridge/
 
 # Generated addon packages and packaging intermediates
+/release.py
+tempCodeRunnerFile.py
 build/
 dist/
 *.egg-info/

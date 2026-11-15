@@ -16,6 +16,8 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 - **Linux/macOS: second import failed with "port already in use".** The
   Openplanet bridge server can now restart on the same port right after a
   previous import closed it. Windows behaviour is unchanged.
+- **Check for Updates returned "HTTP 404".** The update check now also finds
+  preview (pre-)releases instead of only stable releases.
 
 ### Documentation
 

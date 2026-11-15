@@ -22,7 +22,7 @@ ADDON_SHORT_NAME = "Nadeo Exporter CE"
 bl_info = {
     "name": "Nadeo Exporter Community Edition",
     "author": "StupsKiesel",
-    "version": (0, 0, 14),
+    "version": (0, 0, 15),
     "blender": (3, 6, 2),
     "location": "File > Import > Nadeo Exporter CE",
     "description": "Community preview: bring Nadeo GBX meshes and materials into Blender",

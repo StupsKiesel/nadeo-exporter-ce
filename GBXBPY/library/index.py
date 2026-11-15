@@ -77,8 +77,13 @@ class GameIndex:
         # extracts them as "Name.Gbx_394", which no import ever references.
         if not rel or "?" in rel:
             return
-        self._files[rel.lower()] = (rel, int(size))
         parts = rel.split("/")
+        # Under Wine the game lists files Openplanet extracted below their
+        # absolute path ("home/<user>/.wine/.../Extract/GameData/..."); the
+        # real game data has no nested GameData folder.
+        if any(part.lower() == "gamedata" for part in parts[:-1]):
+            return
+        self._files[rel.lower()] = (rel, int(size))
         folder = ""
         for depth, name in enumerate(parts):
             children = self._folders.setdefault(folder, ({}, {}))

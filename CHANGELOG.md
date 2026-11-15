@@ -2,6 +2,16 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.15] - 2026-11-15
+
+### Fixed
+
+- **Fill Missing on Linux no longer requests bogus files.** Under Wine the game
+  also lists files Openplanet extracted below their absolute path
+  (`GameData/home/<user>/.wine/.../Extract/GameData/...`). These entries
+  are now left out of the game index, also from an index saved earlier, so
+  Fill Missing and Check / Repair no longer report them as failed.
+
 ## [0.0.14] - 2026-11-15
 
 ### Changed
@@ -128,6 +138,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.15]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.15
 [0.0.14]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.14
 [0.0.13]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13
 [0.0.12]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.12

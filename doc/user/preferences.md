@@ -34,12 +34,13 @@ horizontal rows. Openplanet groups connection status, plugin actions, and
 port/library actions into compact rows. Directory fields remain full-width for
 readable paths.
 
-**Check for Updates** checks the latest GitHub release and reports whether it
-is newer than the installed addon; it does not download or install updates.
+**Check for Updates** checks the newest published GitHub release, including
+pre-releases, and reports whether it is newer than the installed addon; it does
+not download or install updates. Drafts are ignored.
 **Open GitHub Repository** opens
 [nadeo-exporter-ce](https://github.com/StupsKiesel/nadeo-exporter-ce) in a browser.
-Update checks require a public repository with a published stable release;
-the addon does not authenticate to private repositories.
+Update checks require a public repository; the addon does not authenticate to
+private repositories.
 **Upgrade Folder** remains developer-only for local build ZIPs.
 
 ## Python Dependencies

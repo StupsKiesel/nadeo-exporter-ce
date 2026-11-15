@@ -22,7 +22,7 @@ ADDON_SHORT_NAME = "Nadeo Exporter CE"
 bl_info = {
     "name": "Nadeo Exporter Community Edition",
     "author": "StupsKiesel",
-    "version": (0, 0, 9),
+    "version": (0, 0, 10),
     "blender": (3, 6, 2),
     "location": "File > Import > Nadeo Exporter CE",
     "description": "Community preview: bring Nadeo GBX meshes and materials into Blender",
@@ -1166,32 +1166,41 @@ def _add_pose_shape_keys(obj, lod, new_to_old_first: list[int], vertex_offsets=N
 
     Each pose block is a same-length-as-vertices list of alternative
     positions. The first key is the rest pose (``Basis``); each subsequent
-    key activates one stored animation pose. A long looping keyframe
-    animation steps through them so timeline playback reproduces the
-    in-engine wind motion.
+    key activates one stored animation pose. One cyclic keyframe set steps
+    through them so timeline playback reproduces the in-engine wind motion.
+
+    Every individual shape-key RNA write costs time proportional to the
+    number of objects in the file, so coordinates and keyframes are written
+    with bulk ``foreach_set`` calls instead of per-element assignments.
     """
     if obj.data.shape_keys is not None:
         obj.shape_key_clear()
 
     sk_basis = obj.shape_key_add(name="Basis", from_mix=False)
-    sk_basis.interpolation = "KEY_LINEAR"
+    if sk_basis.interpolation != "KEY_LINEAR":
+        sk_basis.interpolation = "KEY_LINEAR"
+    basis_co = [0.0] * (len(sk_basis.data) * 3)
+    sk_basis.data.foreach_get("co", basis_co)
 
     pose_key_names: list[str] = []
     for pose_idx, block in enumerate(lod.pose_blocks, start=1):
         key = obj.shape_key_add(name=f"TM_WindPose_{pose_idx:03d}", from_mix=False)
-        key.interpolation = "KEY_LINEAR"
+        if key.interpolation != "KEY_LINEAR":
+            key.interpolation = "KEY_LINEAR"
         # Pose blocks are indexed by *source* (pre-dedup) vertex; remap
         # each merged target vertex back to the first source vertex that
         # produced it so the deformation matches.
+        co = list(basis_co)
         for new_i, old_i in enumerate(new_to_old_first):
-            if new_i >= len(key.data) or old_i >= len(block):
+            if new_i * 3 >= len(co) or old_i >= len(block):
                 break
             pos = block[old_i]
             off = vertex_offsets.get(new_i) if vertex_offsets else None
             if off is None:
-                key.data[new_i].co = (pos.x, pos.y, pos.z)
+                co[new_i * 3:new_i * 3 + 3] = (pos.x, pos.y, pos.z)
             else:
-                key.data[new_i].co = (pos.x + off[0], pos.y + off[1], pos.z + off[2])
+                co[new_i * 3:new_i * 3 + 3] = (pos.x + off[0], pos.y + off[1], pos.z + off[2])
+        key.data.foreach_set("co", co)
         pose_key_names.append(key.name)
 
     obj.data.shape_keys.use_relative = True
@@ -1212,45 +1221,33 @@ def _add_pose_shape_keys(obj, lod, new_to_old_first: list[int], vertex_offsets=N
     anim_data.action = action
 
     pose_count = len(pose_key_names)
-    fp = 1
+    # The timeline still spans the previously baked 120 cycles; the CYCLES
+    # modifier repeats the single cycle beyond that as well.
     cycles = 120
-    period = pose_count * fp
+    period = pose_count
 
-    for key_name in pose_key_names:
-        kb = shape_keys.key_blocks.get(key_name)
-        if kb is not None:
-            kb.value = 0.0
+    def weight(pose_i: int, frame: int) -> float:
+        return 1.0 if (frame - 1) % period == pose_i else 0.0
 
+    linear = bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items["LINEAR"].value
     for pose_i, key_name in enumerate(pose_key_names):
-        kb = shape_keys.key_blocks.get(key_name)
-        if kb is None:
-            continue
-        for cycle_i in range(cycles):
-            cycle_base = 1 + cycle_i * period
-            frame_active = cycle_base + pose_i * fp
-            frame_prev = cycle_base + ((pose_i - 1) % pose_count) * fp
-            frame_next = cycle_base + ((pose_i + 1) % pose_count) * fp
-            kb.value = 0.0
-            kb.keyframe_insert(data_path="value", frame=frame_prev)
-            kb.value = 1.0
-            kb.keyframe_insert(data_path="value", frame=frame_active)
-            kb.value = 0.0
-            kb.keyframe_insert(data_path="value", frame=frame_next)
-
-    # Force linear interpolation. Blender 5.x replaced ``Action.fcurves``
-    # with the layered Animation system, so iterate that when present.
-    fcurves = getattr(action, "fcurves", None)
-    if fcurves is None:
-        for layer in getattr(action, "layers", []) or []:
-            for strip in getattr(layer, "strips", []) or []:
-                for channelbag in getattr(strip, "channelbags", []) or []:
-                    for fcurve in getattr(channelbag, "fcurves", []) or []:
-                        for kp in fcurve.keyframe_points:
-                            kp.interpolation = "LINEAR"
-    else:
-        for fcurve in fcurves:
-            for kp in fcurve.keyframe_points:
-                kp.interpolation = "LINEAR"
+        data_path = f'key_blocks["{key_name}"].value'
+        if hasattr(action, "fcurve_ensure_for_datablock"):
+            fcurve = action.fcurve_ensure_for_datablock(shape_keys, data_path)
+        else:
+            fcurve = action.fcurves.new(data_path)
+        # Each pose ramps 0 -> 1 -> 0 around its own frame. Frames 1 and
+        # period + 1 bound the cycle so CYCLES repeats exactly ``period``.
+        frames = {1, period + 1}
+        frames.update(f for f in range(1, period + 2)
+                      if any(weight(pose_i, g) for g in (f - 1, f, f + 1)))
+        points = sorted(frames)
+        fcurve.keyframe_points.add(len(points))
+        fcurve.keyframe_points.foreach_set(
+            "co", [c for f in points for c in (float(f), weight(pose_i, f))])
+        fcurve.keyframe_points.foreach_set("interpolation", [linear] * len(points))
+        fcurve.modifiers.new(type="CYCLES")
+        fcurve.update()
 
     end_frame = 1 + cycles * period
     try:

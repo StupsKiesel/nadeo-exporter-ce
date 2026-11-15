@@ -6,8 +6,11 @@
 # Blender-dependent tests use Blender's bundled Python, not this environment.
 # Tests use the standard-library unittest runner and remain unpublished.
 # Release ZIP packaging needs only the Python standard library.
+# To also render the README: python build.py --release --pdf
+# PDF rendering uses Markdown below and an installed Chrome, Edge or Chromium.
 # These pins describe development dependencies, not Blender installation pins.
 construct==2.10.70
 gbx-py==0.3.1
 Pillow==12.2.0
 numpy==2.2.6
+Markdown==3.10.3

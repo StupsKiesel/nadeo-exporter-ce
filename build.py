@@ -3,19 +3,27 @@
 Usage:
     python build.py
     python build.py --release
+    python build.py --release --pdf
 
 Output:
     build/nadeo_exporter_ce_<version>_<timestamp>.zip
     dist/nadeo_exporter_ce_<version>.zip (--release, no live install)
+    dist/Nadeo_Exporter_CE_User_Guide_<version>.pdf (--release --pdf)
+
+PDF generation requires Markdown from requirements-dev.txt and Chrome,
+Edge or Chromium. ZIP-only builds need only the Python standard library.
 """
 
 from __future__ import annotations
 
 import argparse
+from html import escape
 import os
 import importlib.util
 import re
 import shutil
+import subprocess
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -143,7 +151,111 @@ def install_to_blender(files: list[tuple[Path, str]]) -> None:
     print(f"Installed {copied} files to {dest_base}")
 
 
-def build(*, release: bool = False) -> Path:
+def render_readme_pdf(output_dir: Path, version: str) -> Path:
+    """Render the current README and its local images as a separate user guide."""
+    try:
+        import markdown
+    except ModuleNotFoundError as exc:
+        if exc.name != "markdown":
+            raise
+        raise RuntimeError(
+            "PDF generation requires Markdown; install requirements-dev.txt first."
+        ) from exc
+
+    candidates = []
+    for name in ("chrome", "msedge", "chromium", "google-chrome"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+    for directory in (
+        os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+        os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+    ):
+        candidates.extend((
+            Path(directory) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(directory) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ))
+    browser = next((path for path in candidates if path.is_file()), None)
+    if browser is None:
+        raise RuntimeError("PDF generation requires Chrome, Edge or Chromium on PATH.")
+
+    source = (ROOT / "README.md").read_text(encoding="utf-8")
+    source = re.sub(
+        r"^> \[!([A-Z]+)\]",
+        lambda match: f"> **{match[1].title()}**",
+        source, flags=re.MULTILINE,
+    )
+    source = re.sub(r"</?details(?:\s[^>]*)?>", "", source)
+    source = re.sub(r"<summary>(.*?)</summary>", r"\n**\1**\n", source)
+    body = markdown.markdown(source, extensions=["extra", "toc", "sane_lists"])
+
+    def image_uri(match: re.Match[str]) -> str:
+        image = ROOT / match[1]
+        if not image.is_file():
+            raise RuntimeError(f"README image does not exist: {image}")
+        return f'src="{escape(image.resolve().as_uri(), quote=True)}"'
+
+    body = re.sub(r'src="([^"]+)"', image_uri, body)
+    css = """
+@page { size: A4; margin: 17mm 16mm 18mm; }
+* { box-sizing: border-box; }
+body { font: 10pt/1.45 "Segoe UI", Arial, sans-serif; color: #202936; margin: 0; }
+h1, h2, h3 { color: #12385a; line-height: 1.2; break-after: avoid; }
+h1 { font-size: 25pt; margin: 0 0 6mm; }
+h2 { font-size: 17pt; margin: 8mm 0 3mm; border-bottom: 1px solid #c7d7e6; padding-bottom: 2mm; }
+h3 { font-size: 12pt; margin: 5mm 0 2mm; }
+p { margin: 2.4mm 0; orphans: 3; widows: 3; }
+ul, ol { padding-left: 6mm; margin: 2.5mm 0; }
+li { margin: 1mm 0; }
+a { color: #145b92; text-decoration: none; overflow-wrap: anywhere; }
+img { display: block; max-width: 100%; max-height: 170mm; width: auto; height: auto;
+      margin: 4mm auto; object-fit: contain; break-inside: avoid; }
+blockquote { border-left: 3px solid #4b83ad; background: #f0f5fa; margin: 4mm 0;
+             padding: 2mm 4mm; break-inside: avoid; }
+table { width: 100%; border-collapse: collapse; margin: 4mm 0; font-size: 9pt; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th, td { border: 1px solid #cdd7e1; padding: 2mm 2.5mm; vertical-align: top; }
+th { background: #e9f1f8; text-align: left; }
+td:first-child { min-width: 28mm; }
+code { font: 8.8pt Consolas, monospace; background: #eef2f6; overflow-wrap: anywhere; }
+pre { white-space: pre-wrap; padding: 3mm; background: #eef2f6; break-inside: avoid; }
+hr { border: 0; border-top: 1px solid #cdd7e1; margin: 6mm 0; }
+"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = output_dir / f"Nadeo_Exporter_CE_User_Guide_{version}.pdf"
+    with tempfile.TemporaryDirectory(prefix="nadeo-readme-", dir=output_dir) as folder:
+        temporary = Path(folder)
+        html_path = temporary / "readme.html"
+        temporary_pdf = temporary / "guide.pdf"
+        html_path.write_text(
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f"<title>Nadeo Exporter CE - User Guide {escape(version)}</title>"
+            f"<style>{css}</style></head><body>{body}</body></html>",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                str(browser), "--headless", "--disable-gpu", "--disable-extensions",
+                "--disable-background-networking", "--no-first-run",
+                "--no-default-browser-check", "--no-pdf-header-footer",
+                f"--user-data-dir={temporary / 'browser-profile'}",
+                f"--print-to-pdf={temporary_pdf}", html_path.as_uri(),
+            ],
+            check=True, capture_output=True, timeout=120,
+        )
+        if not temporary_pdf.is_file():
+            raise RuntimeError("The browser did not produce a README PDF.")
+        data = temporary_pdf.read_bytes()
+        if not data.startswith(b"%PDF-") or not data.rstrip().endswith(b"%%EOF"):
+            raise RuntimeError("The browser produced an invalid README PDF.")
+        os.replace(temporary_pdf, pdf_path)
+    print(f"Built {pdf_path}")
+    print(f"Size: {pdf_path.stat().st_size / 1024:.1f} KB")
+    return pdf_path
+
+
+def build(*, release: bool = False, pdf: bool = False) -> Path:
     """Create the addon zip and optionally mirror it into Blender's addon dir."""
     if not (ADDON_SOURCE_DIR / "__init__.py").is_file():
         raise RuntimeError("Blender Addon/__init__.py is missing")
@@ -167,6 +279,8 @@ def build(*, release: bool = False) -> Path:
     print(f"Files: {len(files)}")
     print(f"Size: {zip_path.stat().st_size / 1024:.1f} KB")
 
+    if pdf:
+        render_readme_pdf(output_dir, version)
     if not release:
         install_to_blender(files)
     return zip_path
@@ -178,5 +292,9 @@ if __name__ == "__main__":
         "--release", action="store_true",
         help="Build a version-only archive in dist without installing into Blender.",
     )
+    parser.add_argument(
+        "--pdf", action="store_true",
+        help="Render the current README as a separate PDF alongside the addon ZIP.",
+    )
     args = parser.parse_args()
-    build(release=args.release)
+    build(release=args.release, pdf=args.pdf)

@@ -3,8 +3,8 @@
 **Nadeo Exporter CE** brings Trackmania (2020) maps and assets into Blender
 for **renders**, **cinematics** and **asset work**.
 
-[**Download addon v0.0.10 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.10/nadeo_exporter_ce_0.0.10.zip)
-| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.10)
+[**Download addon v0.0.11 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.11/nadeo_exporter_ce_0.0.11.zip)
+| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.11)
 | [Changelog](CHANGELOG.md)
 
 Install this ZIP in Blender; see the setup instructions below.
@@ -14,7 +14,7 @@ Install this ZIP in Blender; see the setup instructions below.
 *An imported Trackmania map rendered in Blender.*
 
 > [!NOTE]
-> **Version 0.0.10 is a public preview.** Mesh, material and environment
+> **Version 0.0.11 is a public preview.** Mesh, material and environment
 > fidelity is still being refined. Unsupported or unavailable content can
 > become placeholders. This is an import and preview tool: **writing GBX
 > files and exporting edited maps back to Trackmania are not supported**.
@@ -78,7 +78,7 @@ Install this ZIP in Blender; see the setup instructions below.
 ### 1. Install the packaged addon
 
 > [!IMPORTANT]
-> **[Download addon v0.0.10 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.10/nadeo_exporter_ce_0.0.10.zip)**,
+> **[Download addon v0.0.11 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.11/nadeo_exporter_ce_0.0.11.zip)**,
 > then follow the installation steps below.
 > Do **not** install GitHub's **Code > Download ZIP** source archive.
 > Development packages additionally include a timestamp in their filename.

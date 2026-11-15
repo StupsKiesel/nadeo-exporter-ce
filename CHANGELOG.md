@@ -2,6 +2,16 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.11] - 2026-11-15
+
+### Fixed
+
+- **Stadium decoration misplaced on maps larger than their decoration.**
+  Maps whose size differs from their stadium decoration (for example a
+  64×64 or 128×128 map using the 48×48 stadium) had the stands, screens and
+  surroundings shifted by hundreds of metres. The stadium is now placed on
+  the decoration's own 48×48 field at the map origin, as in game.
+
 ## [0.0.10] - 2026-11-15
 
 ### Fixed
@@ -28,5 +38,6 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.11]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.11
 [0.0.10]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.10
 [0.0.9]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.9

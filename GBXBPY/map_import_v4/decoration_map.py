@@ -153,6 +153,28 @@ def _load_decoration(map_asset: Map, dependencies: Dependencies) -> tuple[str, D
     return decoration_path, decoration
 
 
+def _decoration_field_size(
+    map_asset: Map, decoration: Decoration, source: str, dependencies: Dependencies,
+) -> tuple[int, int, int]:
+    """Block size the deco map is centred on: the DecorationSize, not the map.
+
+    Maps can store a larger size than their decoration (e.g. 64x64 with a
+    48x48 stadium); the game still centres the stadium on the 48x48 field.
+    """
+    resolver, plan = dependencies.resolver, dependencies.plan
+    size_path = resolver.resolve(decoration.deco_size_path, source_path=source) if decoration.deco_size_path else None
+    if size_path is None:
+        return map_asset.map_size
+    try:
+        size = load(size_path, resolver=resolver, recursive=False)
+    except (GbxbpyError, OSError) as exc:
+        plan.issue("parse_failed", size_path, f"Decoration size: {exc}")
+        return map_asset.map_size
+    if not isinstance(size, DecorationSize) or len(size.size) != 3:
+        return map_asset.map_size
+    return tuple(size.size)
+
+
 def plan_decoration_scene(
     map_asset: Map, decoration: Decoration, source: str, dependencies: Dependencies, skins=None,
 ) -> int:
@@ -244,7 +266,8 @@ def plan_decoration_map(map_asset: Map, dependencies: Dependencies, skins=None) 
     deco_grid = collection_grid(gamedata, collection)
     main_grid = collection_grid(gamedata, map_asset.decoration_collection or "Stadium")
     origin = translation(*deco_map_origin(
-        map_asset.map_size, main_grid, map_asset.deco_base_height_offset,
+        _decoration_field_size(map_asset, decoration, source, dependencies),
+        main_grid, map_asset.deco_base_height_offset,
         deco_map.map_size, deco_grid, collection,
     ))
     deco_dependencies = Dependencies(dependencies.resolver, plan, deco_map.embedded_items)

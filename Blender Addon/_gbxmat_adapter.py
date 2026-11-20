@@ -213,8 +213,8 @@ _FAMILY_RULES: tuple[tuple[str, str], ...] = _RENDER_MODE_RULES + (
 _NOT_WATER_SURFACE: tuple[str, ...] = ("waterground", "waterbottom", "watershore", "waterborder")
 
 
-# Cache: abs path -> loaded GBXBPY Material (or None if load failed).
-_LINKED_MATERIAL_CACHE: dict[str, object] = {}
+# Cache: abs path -> (loaded GBXBPY Material or None, load error).
+_LINKED_MATERIAL_CACHE: dict[str, tuple[Optional[object], str]] = {}
 
 
 def _name_hint_from_binding(binding) -> str:
@@ -535,7 +535,22 @@ def _vista_water_fog(material_source: str) -> str:
     return ""
 
 
-def _load_linked_material(material_path: str, resolver, source_path: str, *, terrain_remap: bool = False):
+def _warn_linked_material(resolver, key, message, *args):
+    if resolver is not None:
+        warned = getattr(resolver, "_gbxmat_warned_materials", None)
+        if warned is None:
+            warned = set()
+            resolver._gbxmat_warned_materials = warned
+        if key in warned:
+            return
+        warned.add(key)
+    log.warning(message, *args)
+
+
+def _load_linked_material(
+    material_path: str, resolver, source_path: str, *, terrain_remap: bool = False,
+    warn_on_failure: bool = False,
+):
     """Resolve + GBXBPY.load a .Material.Gbx, with per-process caching.
 
     Lookup order:
@@ -558,9 +573,17 @@ def _load_linked_material(material_path: str, resolver, source_path: str, *, ter
     binding-level loads use it: a remapped copy may inherit from the very
     material it replaces.
     """
-    if not material_path or resolver is None:
+    if not material_path:
+        return None
+    if resolver is None:
+        if warn_on_failure:
+            _warn_linked_material(
+                resolver, ("no-root", material_path),
+                "Cannot resolve material %r: no GameData library is configured", material_path,
+            )
         return None
     abs_path: Optional[str] = None
+    lookup_errors: list[str] = []
 
     # 1) Modifier-folder override (themed/skinned material copy).
     modifier_folders = _modifier_folders_for(resolver)
@@ -588,6 +611,7 @@ def _load_linked_material(material_path: str, resolver, source_path: str, *, ter
             abs_path = resolver.resolve(material_path, source_path=source_path)
         except Exception as e:  # noqa: BLE001
             log.debug("resolver failed for material %r: %s", material_path, e)
+            lookup_errors.append(f"{type(e).__name__}: {e}")
     # Custom items name game materials without the extension
     # ("Stadium\Media\Material_BlockCustom\CustomModOpaque").
     if not abs_path and not os.path.splitext(material_path)[1] and ("\\" in material_path or "/" in material_path):
@@ -595,6 +619,7 @@ def _load_linked_material(material_path: str, resolver, source_path: str, *, ter
             abs_path = resolver.resolve(material_path + ".Material.Gbx", source_path=source_path)
         except Exception as e:  # noqa: BLE001
             log.debug("resolver failed for material %r: %s", material_path, e)
+            lookup_errors.append(f"{type(e).__name__}: {e}")
 
     # 3) Same-collection stem lookup: a vista prefab's bare "Water" means
     # <Env>\Media\Material\Water, not the Stadium copy the global index
@@ -615,8 +640,23 @@ def _load_linked_material(material_path: str, resolver, source_path: str, *, ter
                 abs_path = lookup.find(material_path)
             except Exception as e:  # noqa: BLE001
                 log.debug("material lookup failed for %r: %s", material_path, e)
+                lookup_errors.append(f"{type(e).__name__}: {e}")
                 abs_path = None
     if not abs_path:
+        if warn_on_failure:
+            root = getattr(resolver, "gamedata_dir", "") or "(not configured)"
+            if lookup_errors:
+                _warn_linked_material(
+                    resolver, ("resolve", material_path.casefold()),
+                    "Material %r could not be resolved (GameData: \"%s\"; source: \"%s\"): %s",
+                    material_path, root, source_path, "; ".join(lookup_errors),
+                )
+            else:
+                _warn_linked_material(
+                    resolver, ("missing", material_path.casefold()),
+                    "Material %r not found (GameData: \"%s\"; source: \"%s\")",
+                    material_path, root, source_path,
+                )
         return None
     if terrain_remap:
         remap = getattr(resolver, "_gbxmat_terrain_remap", None) or {}
@@ -624,14 +664,24 @@ def _load_linked_material(material_path: str, resolver, source_path: str, *, ter
         if target:
             log.debug("terrain remap: %s -> %s", abs_path, target)
             abs_path = target
-    if abs_path in _LINKED_MATERIAL_CACHE:
-        return _LINKED_MATERIAL_CACHE[abs_path]
-    try:
-        loaded = GBXBPY.load(abs_path, resolver=resolver, recursive=False)
-    except Exception as e:  # noqa: BLE001
-        log.debug("failed to load linked material %s: %s", abs_path, e)
-        loaded = None
-    _LINKED_MATERIAL_CACHE[abs_path] = loaded
+    cached = _LINKED_MATERIAL_CACHE.get(abs_path)
+    if cached is None:
+        try:
+            loaded = GBXBPY.load(abs_path, resolver=resolver, recursive=False)
+            error = ""
+        except Exception as e:  # noqa: BLE001
+            loaded = None
+            error = f"{type(e).__name__}: {e}"
+            log.debug("failed to load linked material %s: %s", abs_path, error)
+        cached = (loaded, error)
+        _LINKED_MATERIAL_CACHE[abs_path] = cached
+    loaded, error = cached
+    if error and warn_on_failure:
+        _warn_linked_material(
+            resolver, ("load", os.path.normcase(abs_path)),
+            "Material %r found at \"%s\" but failed to load: %s (GameData: \"%s\")",
+            material_path, abs_path, error, getattr(resolver, "gamedata_dir", "") or "(not configured)",
+        )
     return loaded
 
 
@@ -1639,7 +1689,7 @@ def spec_from_binding(
     linked_material = None
     if not textures and binding.material_path:
         linked_material = _load_linked_material(
-            binding.material_path, resolver, source_path, terrain_remap=True
+            binding.material_path, resolver, source_path, terrain_remap=True, warn_on_failure=True,
         )
         if linked_material is not None and not terrain_layers:
             fixed = _fixed_terrain_spec(binding, linked_material, resolver)

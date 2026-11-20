@@ -560,7 +560,7 @@ class TMBRIDGE_OT_BatchImportItems(bpy.types.Operator, ImportHelper):
     def poll(cls, context):
         return context.mode == "OBJECT" and not _progress.active()
 
-    @_progress.tracked("Batch Importing Items")
+    @_progress.tracked("Batch Importing Items", importing=True)
     def execute(self, context):
         paths = [Path(self.directory) / entry.name for entry in self.files] or [Path(self.filepath)]
         failures, successes, imported = [], [], []
@@ -961,6 +961,10 @@ class TMBRIDGE_OT_RunBatch(_BatchOptions, bpy.types.Operator, ImportHelper):
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        if any(target.root is None and target.from_file for target, _destination in self._jobs):
+            from . import _show_console_on_import
+
+            _show_console_on_import(context)
         self._successes, self._failures = [], []
         self._scene = context.scene
         self._cancel_requested = False

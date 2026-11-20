@@ -263,7 +263,7 @@ class TMBRIDGE_OT_AssetPreviewAction(bpy.types.Operator):
 
 
 class TMBRIDGE_OT_AssetMakeEditable(bpy.types.Operator):
-    """Make only the active owning placement editable, including attached clips"""
+    """Make the active block editable with all its clips, bundled in one collection"""
 
     bl_idname = "trackmania_blender_bridge.asset_make_editable"
     bl_label = "Make Asset Editable"

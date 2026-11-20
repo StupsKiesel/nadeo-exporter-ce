@@ -25,12 +25,15 @@ Notes:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
-from ..coords import gbx_to_blender_vec3
+from ..coords import gbx_iso_to_blender_matrix, gbx_to_blender_vec3, multiply_matrices
+from ._light import light_from_user_model
 from ..model.geometry import CrystalLayer, MeshPart
 from ..model import (
+    Item,
     MaterialBinding,
     Mesh,
     MeshLOD,
@@ -47,6 +50,8 @@ from ._deformation import (
     world_to_source_local,
 )
 from .mesh import _parse_material_binding, target_color_from_user_inst
+from ..registry import register
+from ..errors import ParseError
 
 log = logging.getLogger("gbxbpy.load.crystal")
 
@@ -342,11 +347,7 @@ def _apply_translation_layer(
     faces_simple: List[dict],
     trans_inner: Any,
 ) -> tuple:
-    """Duplicate the geometry with a translation offset applied to the copy.
-
-    The Translation modifier in the editor adds a translated *copy* of the
-    source layer (the original is preserved).
-    """
+    """Move the geometry without retaining a copy at the old position."""
     t = getattr(trans_inner, "translation", None)
     tx = float(getattr(t, "x", 0.0) or 0.0) if t is not None else 0.0
     ty = float(getattr(t, "y", 0.0) or 0.0) if t is not None else 0.0
@@ -355,20 +356,8 @@ def _apply_translation_layer(
     if tx == 0.0 and ty == 0.0 and tz == 0.0:
         return raw_positions, faces_simple
 
-    base_count = len(raw_positions)
     translated = [(p[0] + tx, p[1] + ty, p[2] + tz) for p in raw_positions]
-    new_positions = list(raw_positions) + translated
-
-    new_faces = list(faces_simple)
-    for face_d in faces_simple:
-        new_faces.append({
-            **face_d,
-            "inds": [i + base_count for i in face_d["inds"]],
-            "mat": face_d["mat"],
-            "group": face_d["group"],
-            "uvs": list(face_d["uvs"]),
-        })
-    return new_positions, new_faces
+    return translated, faces_simple
 
 
 def _apply_scale_layer(
@@ -376,7 +365,7 @@ def _apply_scale_layer(
     faces_simple: List[dict],
     scale_inner: Any,
 ) -> tuple:
-    """Scale the geometry per axis about the item origin.
+    """Scale the geometry per axis about its vertex centroid.
 
     With ``independently`` each connected part is scaled about its own
     bounding-box centre instead. A mirroring (negative) scale reverses the
@@ -389,7 +378,11 @@ def _apply_scale_layer(
     if factors == (1.0, 1.0, 1.0) or not raw_positions:
         return raw_positions, faces_simple
 
-    centres = [(0.0, 0.0, 0.0)] * len(raw_positions)
+    centre = tuple(
+        sum(p[a] for p in raw_positions) / len(raw_positions)
+        for a in range(3)
+    )
+    centres = [centre] * len(raw_positions)
     if bool(getattr(scale_inner, "independently", False)):
         for comp in _connected_components(raw_positions, faces_simple):
             centre = tuple(
@@ -563,9 +556,9 @@ def build_mesh_from_crystal(
             continue
 
         crystal_wrap = getattr(content, "crystal", None)
-        if crystal_wrap is None or not getattr(crystal_wrap, "isEmbeddedCrystal", False):
+        if crystal_wrap is None:
             continue
-        ec = getattr(crystal_wrap, "embeddedCrystal", None)
+        ec = getattr(crystal_wrap, "embeddedCrystal" if crystal_wrap.isEmbeddedCrystal else "editableCrystal", None)
         if ec is None:
             continue
 
@@ -831,6 +824,36 @@ def build_parts_from_crystal(node: Any, *, name: str = "", source_path: str = ""
     layers = list(getattr(chunk, "layers", None) or [])
     parts = []
     for info, layer in zip(crystal_layers(node), layers):
+        if info.type == "Light":
+            content = layer.content.content
+            models = content.lights
+            for index, position in enumerate(content.positions):
+                model_index = position.light_index
+                if not 0 <= model_index < len(models):
+                    log.warning("Invalid crystal light index %s in %s (layer %s, placement %d)",
+                                model_index, source_path, info.name, index)
+                    continue
+                model = _body_dict(models[model_index]).get(0x090F9000)
+                light = light_from_user_model(model, source_path=source_path)
+                if light is None:
+                    continue
+                key = repr((source_path, info.index, index, model))
+                light_name = "CrystalLight_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+                light.name = light_name
+                # TM's local -Z beam becomes +Y after the basis change;
+                # Blender lights emit along local -Z.
+                matrix = multiply_matrices(gbx_iso_to_blender_matrix(position.transform), (
+                    (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, -1.0, 0.0),
+                    (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0),
+                ))
+                parts.append(MeshPart(
+                    name=f"{info.name or name or 'Light'}_{index}", role="light",
+                    mesh=Mesh(source_path=source_path or None, name=light_name, lights=[light]),
+                    collidable=False, enabled=info.enabled,
+                    matrix=matrix,
+                    layer_index=info.index, layer_id=info.id, layer_type=info.type,
+                ))
+            continue
         if info.type not in ("Geometry", "Trigger"):
             continue
         content = layer.content
@@ -843,7 +866,8 @@ def build_parts_from_crystal(node: Any, *, name: str = "", source_path: str = ""
         )
         if mesh is None:
             wrapper = getattr(content, "crystal", None)
-            geometry = getattr(wrapper, "embeddedCrystal", None)
+            geometry = getattr(wrapper, "embeddedCrystal" if getattr(wrapper, "isEmbeddedCrystal", False)
+                               else "editableCrystal", None)
             if geometry is not None and not (
                 getattr(geometry, "vertices", None) and getattr(geometry, "faces", None)
             ):
@@ -867,4 +891,18 @@ def build_parts_from_crystal(node: Any, *, name: str = "", source_path: str = ""
     return parts
 
 
-__all__ = ["build_mesh_from_crystal", "build_parts_from_crystal", "crystal_layers", "CRYSTAL_CLASS_ID"]
+@register(CRYSTAL_CLASS_ID)
+def load_crystal(parsed: Any, *, source_path: str = "", resolver: Any = None) -> Item:
+    """Expose a standalone modeller crystal through the shared layered item importer."""
+    if _CHUNK_LAYERS not in _body_dict(parsed) or "layers" not in _body_dict(parsed)[_CHUNK_LAYERS]:
+        raise ParseError(f"Crystal has no decoded layers: {source_path}")
+    name = source_path.replace("\\", "/").rsplit("/", 1)[-1].split(".", 1)[0]
+    return Item(
+        name=name, source_path=source_path or None, class_id=CRYSTAL_CLASS_ID, raw=parsed,
+        parts=build_parts_from_crystal(parsed, name=name, source_path=source_path),
+        crystal_layers=crystal_layers(parsed),
+    )
+
+
+__all__ = ["build_mesh_from_crystal", "build_parts_from_crystal", "crystal_layers", "load_crystal",
+           "CRYSTAL_CLASS_ID"]

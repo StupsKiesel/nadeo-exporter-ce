@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import logging
 import math
 import os
@@ -22,7 +23,7 @@ ADDON_SHORT_NAME = "Nadeo Exporter CE"
 bl_info = {
     "name": "Nadeo Exporter Community Edition",
     "author": "StupsKiesel",
-    "version": (0, 0, 15),
+    "version": (0, 0, 16),
     "blender": (3, 6, 2),
     "location": "File > Import > Nadeo Exporter CE",
     "description": "Community preview: bring Nadeo GBX meshes and materials into Blender",
@@ -69,6 +70,8 @@ def _ensure_bundled_packages_on_path() -> None:
 
 
 _ensure_bundled_packages_on_path()
+
+from GBXBPY import game_paths  # noqa: E402
 
 from . import _dependencies  # noqa: E402
 from . import _file_logging  # noqa: E402
@@ -279,6 +282,15 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
         update=_on_developer_ui_changed,
     )
 
+    show_console_on_import: BoolProperty(
+        name="Console on Import",
+        description=(
+            "Show Blender's system console when importing addon files (Windows only). "
+            "On Linux and macOS, launch Blender from a terminal to see console output"
+        ),
+        default=True,
+    )
+
     advanced_settings: BoolProperty(
         name="Advanced Paths",
         description="Show cache directories and the explicit Packs directory override",
@@ -287,14 +299,14 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
 
     trackmania_dir: StringProperty(
         name="Trackmania",
-        description="Trackmania installation folder; its Packs subfolder supplies stock skins when no Packs override is set. Blank uses automatic discovery",
+        description="Trackmania installation folder. Leave empty when not configured",
         subtype="DIR_PATH",
         default="",
     )
 
     openplanet_dir: StringProperty(
         name="Openplanet",
-        description="Openplanet user folder containing Plugins and Extract; blank uses your user folder's OpenplanetNext directory",
+        description="Openplanet user folder containing Plugins and Extract. Leave empty when not configured",
         subtype="DIR_PATH",
         default="",
     )
@@ -312,13 +324,22 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
     gamedata_dir: StringProperty(
         name="Game Library",
         description=(
-            "GameData folder the importers read game files from. Blank uses Extract\\GameData "
-            "under the selected Openplanet root. The plugin always extracts into Openplanet's "
+            "GameData folder the importers read game files from. The plugin always extracts into Openplanet's "
             "Extract folder; files are moved from there into a custom library"
         ),
         subtype="DIR_PATH",
         default="",
     )
+
+    custom_libraries: BoolProperty(
+        name="Custom GameData Libraries",
+        description="Use a separate GameData library for each selected game",
+        default=False,
+    )
+    custom_gamedata_trackmania: StringProperty(name="Trackmania 2020", subtype="DIR_PATH", default="")
+    custom_gamedata_maniaplanet: StringProperty(name="ManiaPlanet / Trackmania 2", subtype="DIR_PATH", default="")
+    custom_gamedata_turbo: StringProperty(name="Trackmania Turbo", subtype="DIR_PATH", default="")
+    custom_gamedata_forever: StringProperty(name="Trackmania Forever", subtype="DIR_PATH", default="")
 
     bridge_port: IntProperty(
         name="Port",
@@ -368,13 +389,10 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
         update=_on_include_prereleases_changed,
     )
 
+    # TODO: Remove the saved preference and disabled persistent cache after 0.0.18.
     parse_cache_dir: StringProperty(
         name="Parse Cache Directory",
-        description=(
-            "Folder where parsed prefab/mesh assets are pickled. Speeds up "
-            "repeated map imports by ~100x. Leave empty to disable. "
-            "Files are invalidated automatically when the source GBX changes"
-        ),
+        description="Retained for compatibility; persistent parse caching is disabled",
         subtype="DIR_PATH",
         default="",
     )
@@ -383,8 +401,7 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
         name="Game Packs Directory",
         description=(
             "Trackmania install 'Packs' folder holding the stock skin archives "
-            "(Maniaplanet_Skins.zip). Leave empty to auto-detect Ubisoft, Steam "
-            "and Epic installs"
+            "(Maniaplanet_Skins.zip). Leave empty when not configured"
         ),
         subtype="DIR_PATH",
         default="",
@@ -393,19 +410,15 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
     user_skins_dir: StringProperty(
         name="User Trackmania Directory",
         description=(
-            "Folder containing your custom 'Skins' folder. Leave empty to use "
-            "Documents\\Trackmania"
+            "Folder containing your custom 'Skins' folder. Leave empty when not configured"
         ),
         subtype="DIR_PATH",
         default="",
     )
 
     skin_cache_dir: StringProperty(
-        name="Skin Cache Directory",
-        description=(
-            "Where skin images are extracted from pack archives. Leave empty to use "
-            "%LOCALAPPDATA%\\TrackmaniaBlenderBridge\\SkinCache"
-        ),
+        name="Resource Cache Directory",
+        description="Retained for compatibility; the addon uses its standard resource cache",
         subtype="DIR_PATH",
         default="",
     )
@@ -417,49 +430,55 @@ class TMBRIDGE_AddonPreferences(bpy.types.AddonPreferences):
 def _draw_settings(layout, prefs) -> None:
     """Draw routine of the addon preferences window."""
     box = layout.box()
-    box.label(text="Directories", icon="FILE_FOLDER")
-    _draw_paths(box, prefs)
-
-    box = layout.box()
-    row = box.row()
-    row.label(text="Updates", icon="FILE_REFRESH")
-    _tools_panel.draw_github_actions(row)
-    box.prop(prefs, "include_prereleases")
-    _tools_panel.draw_update_status(box)
-
-    box = layout.box()
-    _draw_logging(box, prefs)
-
-    box = layout.box()
     row = box.row()
     row.label(text="Python Dependencies", icon="PREFERENCES")
+    actions = row.row(align=True)
+    actions.alignment = "RIGHT"
     if _dependencies.restart_required:
-        row.label(text="Restart required", icon="INFO")
+        actions.label(text="Restart required", icon="INFO")
     else:
         missing = _dependencies.missing_dependencies()
         if missing:
-            status = row.row()
+            status = actions.row()
             status.alert = True
             status.label(text="Missing: " + ", ".join(missing), icon="ERROR")
+            actions.operator(TMBRIDGE_OT_InstallDependencies.bl_idname, text="Install", icon="IMPORT")
         else:
-            row.label(text="Ready", icon="CHECKMARK")
-    button = row.row()
-    button.enabled = not _dependencies.restart_required
-    button.operator(TMBRIDGE_OT_InstallDependencies.bl_idname, icon="IMPORT")
+            actions.label(text="Ready", icon="CHECKMARK")
+
+    box = layout.box()
+    box.label(text="Directories", icon="FILE_FOLDER")
+    _draw_paths(box, prefs)
 
     try:
         _openplanet_bridge.draw(layout, prefs)
     except ImportError:
         layout.label(text="Install Python dependencies to configure Openplanet", icon="ERROR")
-    layout.prop(prefs, "developer_ui")
+
+    box = layout.box()
+    row = box.row()
+    row.label(text="Updates", icon="FILE_REFRESH")
+    _tools_panel.draw_github_actions(row, prefs=prefs)
+
+    box = layout.box()
+    _draw_logging(box, prefs)
+
+    row = layout.row(align=True)
+    row.prop(prefs, "developer_ui")
+    console = row.row(align=True)
+    console.alignment = "RIGHT"
+    console.enabled = sys.platform == "win32"
+    console.prop(prefs, "show_console_on_import")
 
 
 def _draw_logging(layout, prefs) -> None:
     """Console level and embedded import logs, available without Developer UI."""
     row = layout.row(align=True)
     row.label(text="Logging", icon="TEXT")
-    row.row(align=True).prop(prefs, "log_level", expand=True)
-    row.prop(prefs, "log_to_blend", text="Store in Blend")
+    capture = row.row(align=True)
+    capture.alignment = "RIGHT"
+    capture.prop(prefs, "log_to_blend", text="Store in Blend")
+    layout.row(align=True).prop(prefs, "log_level", expand=True)
     if prefs.log_to_blend:
         if _file_logging.error:
             row = layout.row()
@@ -467,55 +486,338 @@ def _draw_logging(layout, prefs) -> None:
             row.label(text=_file_logging.error, icon="ERROR")
 
 
-# Folder/file preferences; caches and the explicit Packs override are advanced.
+# Searchable folder preferences, including compatibility keys for existing settings.
 PATH_PROPERTIES = (
     "trackmania_dir",
     "openplanet_dir",
     "gamedata_dir",
-    "parse_cache_dir",
+    # "parse_cache_dir",  # Disabled until removal after 0.0.18.
     "packs_dir",
     "user_skins_dir",
-    "skin_cache_dir",
     "build_dir",
+    "custom_gamedata_trackmania",
+    "custom_gamedata_maniaplanet",
+    "custom_gamedata_turbo",
+    "custom_gamedata_forever",
 )
+
+_game_choices = None
+_game_enum = []
+_game_by_number = {}
+_game_items_key = None
+
+
+def _refresh_games(prefs) -> None:
+    from GBXBPY.path_discovery import candidates
+
+    global _game_choices, _game_items_key
+    _game_choices = [item.path for item in candidates("trackmania_dir", {})]
+    _game_items_key = None
+    _update_game_items(prefs)
+
+
+def _update_game_items(prefs) -> None:
+    global _game_enum, _game_by_number, _game_items_key
+    paths = list(_game_choices or ())
+    selected = bpy.path.abspath(prefs.trackmania_dir) if prefs.trackmania_dir else ""
+    if selected and not any(os.path.normcase(p) == os.path.normcase(selected) for p in paths):
+        paths.append(selected)
+    key = tuple((path, os.path.isdir(path)) for path in paths)
+    if key == _game_items_key:
+        return
+    items = [("NONE", "Select a game", "No game selected", "QUESTION", 0)]
+    mapping = {}
+    for path in paths:
+        number = int(hashlib.sha256(os.path.normcase(path).encode("utf-8")).hexdigest()[:7], 16) + 1
+        if number in mapping:
+            log.warning("Game selection identifier collision for %s", path)
+            continue
+        mapping[number] = path
+        label = f"{game_paths.game_label(path)} - {path}"
+        if not os.path.isdir(path):
+            label += " (not found)"
+        icon = {"trackmania": "WORLD", "maniaplanet": "EVENT_M",
+                "turbo": "EVENT_T", "forever": "EVENT_F"}.get(game_paths.game_family(path), "QUESTION")
+        items.append((f"GAME_{number}", label, path, icon, number))
+    _game_enum = items
+    _game_by_number = mapping
+    _game_items_key = key
+
+
+def _game_items(prefs, _context):
+    if _game_choices is None:
+        _refresh_games(prefs)
+    else:
+        _update_game_items(prefs)
+    return _game_enum
+
+
+def _game_get(prefs):
+    _game_items(prefs, None)
+    selected = bpy.path.abspath(prefs.trackmania_dir) if prefs.trackmania_dir else ""
+    return next((number for number, path in _game_by_number.items()
+                 if os.path.normcase(path) == os.path.normcase(selected)), 0)
+
+
+def _game_set(prefs, value):
+    if value == 0:
+        prefs.trackmania_dir = ""
+    elif value in _game_by_number:
+        prefs.trackmania_dir = _game_by_number[value]
+    else:
+        log.error("Selected game is no longer available; refresh the game list")
+
+
+TMBRIDGE_AddonPreferences.__annotations__["game_selection"] = EnumProperty(
+    name="Game", items=_game_items, get=_game_get, set=_game_set,
+)
+
+
+def _path_row(layout, label, *, alert=False, enabled=True):
+    row = layout.row(align=True)
+    row.alert = alert
+    row.enabled = enabled
+    split = row.split(factor=0.25, align=True)
+    split.label(text=label)
+    return split.row(align=True)
 
 
 def _draw_paths(layout, prefs) -> None:
     col = layout.column(align=True)
-    col.use_property_split = True
+    col.use_property_split = False
     col.use_property_decorate = False
-    for name, label in (
-        ("trackmania_dir", "Trackmania"),
-        ("openplanet_dir", "Openplanet"),
-        ("user_skins_dir", "User Files"),
-        ("gamedata_dir", "GameData"),
-    ):
-        col.prop(prefs, name, text=label)
-    if prefs.developer_ui:
-        col.prop(prefs, "build_dir", text="Upgrade Folder")
-    col = layout.column(align=True)
-    col.prop(prefs, "advanced_settings", toggle=True,
-             icon="TRIA_DOWN" if prefs.advanced_settings else "TRIA_RIGHT")
-    if prefs.advanced_settings:
-        col.use_property_split = True
-        col.use_property_decorate = False
-        for name in ("packs_dir", "parse_cache_dir", "skin_cache_dir"):
-            col.prop(prefs, name)
-        if not prefs.parse_cache_dir:
-            col.label(text="Parse cache disabled", icon="INFO")
-    for name in ("trackmania_dir", "openplanet_dir", "user_skins_dir", "packs_dir"):
-        path = getattr(prefs, name)
-        if path and not os.path.isdir(bpy.path.abspath(path)):
-            row = layout.row()
-            row.alert = True
-            row.label(text=f"{prefs.bl_rna.properties[name].name}: folder not found", icon="ERROR")
-    if prefs.trackmania_dir and not prefs.packs_dir:
-        if not os.path.isdir(os.path.join(bpy.path.abspath(prefs.trackmania_dir), "Packs")):
-            layout.label(text="Trackmania folder has no Packs subfolder", icon="ERROR")
+    game = bpy.path.abspath(prefs.trackmania_dir) if prefs.trackmania_dir else ""
+    planet = bpy.path.abspath(prefs.openplanet_dir) if prefs.openplanet_dir else ""
+    invalid_game = not game or not os.path.isdir(game)
+    row = _path_row(col, "Game", alert=invalid_game)
+    row.prop(prefs, "game_selection", text="")
+    row.menu(TMBRIDGE_MT_GamePaths.bl_idname, text="", icon="PREFERENCES")
+    row.operator(TMBRIDGE_OT_PathInfo.bl_idname, text="", icon="INFO")
+    if invalid_game:
+        row.label(text="Required" if not game else "Not found", icon="ERROR")
+    if game and not game_paths.game_family(game):
+        col.label(text="Game version not recognized", icon="ERROR")
+    invalid_planet = not planet or not os.path.isdir(planet)
+    row = _path_row(col, "Openplanet", alert=invalid_planet)
+    row.prop(prefs, "openplanet_dir", text="")
+    row.operator(TMBRIDGE_OT_FindPath.bl_idname, text="", icon="VIEWZOOM").preference = "openplanet_dir"
+    if invalid_planet:
+        row.label(text="Required" if not planet else "Not found", icon="ERROR")
+    user, _common = game_paths.nadeo_dirs(game, planet)
+    if not user or not os.path.isdir(user):
+        col.label(text="User files could not be resolved from Nadeo.ini", icon="ERROR")
+        invalid_user = bool(prefs.user_skins_dir) and not os.path.isdir(bpy.path.abspath(prefs.user_skins_dir))
+        row = _path_row(col, "User Files (manual)", alert=invalid_user)
+        row.prop(prefs, "user_skins_dir", text="")
+        if invalid_user:
+            row.label(text="Not found", icon="ERROR")
+    if game_paths.openplanet_mismatch(game, planet):
+        col.label(text="Openplanet folder does not match the selected game", icon="ERROR")
+    col.prop(prefs, "custom_libraries")
+    old_library = bpy.path.abspath(prefs.gamedata_dir) if prefs.gamedata_dir else ""
+    default_library = os.path.join(planet, "Extract", "GameData") if planet else ""
+    if (old_library and not prefs.custom_libraries
+            and os.path.normcase(os.path.normpath(old_library)) != os.path.normcase(os.path.normpath(default_library))):
+        col.label(text="Previous GameData path is inactive; enable custom libraries to reuse it", icon="INFO")
+    if prefs.custom_libraries:
+        family = game_paths.game_family(game)
+        for key, label in (("trackmania", "Trackmania 2020"),
+                           ("maniaplanet", "ManiaPlanet / Trackmania 2"),
+                           ("turbo", "Trackmania Turbo"),
+                           ("forever", "Trackmania Forever")):
+            supported = key == "trackmania"
+            row = _path_row(col, label, enabled=supported)
+            row.prop(prefs, "custom_gamedata_" + key, text="")
+        if family != "trackmania":
+            col.label(text="Custom library unavailable for this game", icon="INFO")
+        elif not getattr(prefs, "custom_gamedata_" + family):
+            col.label(text="Set a custom library for the selected game", icon="ERROR")
+    if prefs.openplanet_dir and os.path.basename(os.path.normpath(
+            bpy.path.abspath(prefs.openplanet_dir))).casefold() in (
+                "openplanetturbo", "openplanetunited", "openplanetnations"):
+        layout.label(text="Extractor compatibility with this Openplanet version is unverified", icon="INFO")
+_path_choices = {}
+_path_search_serial = 0
+
+
+def _draw_path_info(layout, prefs) -> None:
+    from GBXBPY.resolve.skins import default_cache_dir
+
+    game = bpy.path.abspath(prefs.trackmania_dir) if prefs.trackmania_dir else ""
+    planet = bpy.path.abspath(prefs.openplanet_dir) if prefs.openplanet_dir else ""
+    user, common = game_paths.nadeo_dirs(game, planet)
+    if not user or not os.path.isdir(user):
+        user = bpy.path.abspath(prefs.user_skins_dir) if prefs.user_skins_dir else ""
+    cache = default_cache_dir()
+    game_cache = os.path.join(common, "Cache") if common else ""
+    if not os.path.isdir(game_cache):
+        game_cache = ""
+    layout.label(text=f"User files: {user}" if user else "User files: not configured", icon="FILE_FOLDER")
+    layout.label(text=f"Resource cache: {cache}", icon="FILE_FOLDER")
+    if prefs.skin_cache_dir:
+        layout.label(text="Previous custom resource cache is no longer used", icon="INFO")
+    if prefs.packs_dir:
+        layout.label(text="Previous Packs override is inactive", icon="INFO")
+    layout.label(text=f"Game cache (read-only): {game_cache}" if game_cache
+                 else "Game cache: not found", icon="FILE_FOLDER")
+
+
+class TMBRIDGE_OT_PathInfo(bpy.types.Operator):
+    """Show resolved user and cache directories"""
+
+    bl_idname = "trackmania_blender_bridge.path_info"
+    bl_label = "Path Information"
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_popup(self, width=700)
+
+    def draw(self, context):
+        addon = context.preferences.addons.get(ADDON_ID)
+        if addon is None:
+            self.layout.label(text="Addon preferences are unavailable", icon="ERROR")
+            return
+        _draw_path_info(self.layout, addon.preferences)
+
+    def execute(self, _context):
+        return {"FINISHED"}
+
+
+class TMBRIDGE_OT_RefreshGames(bpy.types.Operator):
+    bl_idname = "trackmania_blender_bridge.refresh_games"
+    bl_label = "Search for Games"
+
+    def execute(self, context):
+        addon = context.preferences.addons.get(ADDON_ID)
+        if addon is None:
+            self.report({"ERROR"}, "Addon preferences are unavailable")
+            return {"CANCELLED"}
+        _refresh_games(addon.preferences)
+        self.report({"INFO"}, f"Found {len(_game_choices)} game installations")
+        return {"FINISHED"}
+
+
+class TMBRIDGE_OT_BrowseGame(bpy.types.Operator):
+    bl_idname = "trackmania_blender_bridge.browse_game"
+    bl_label = "Browse for Game Folder"
+
+    __annotations__ = {"directory": StringProperty(subtype="DIR_PATH")}
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        addon = context.preferences.addons.get(ADDON_ID)
+        path = bpy.path.abspath(self.directory) if self.directory else ""
+        if addon is None or not path or not os.path.isdir(path) or not game_paths.game_family(path):
+            self.report({"ERROR"}, "Select a recognized game installation folder")
+            return {"CANCELLED"}
+        addon.preferences.trackmania_dir = os.path.normpath(path)
+        _update_game_items(addon.preferences)
+        return {"FINISHED"}
+
+
+class TMBRIDGE_MT_GamePaths(bpy.types.Menu):
+    bl_idname = "TMBRIDGE_MT_game_paths"
+    bl_label = "Manage Games"
+
+    def draw(self, _context):
+        self.layout.operator(TMBRIDGE_OT_RefreshGames.bl_idname, icon="VIEWZOOM")
+        self.layout.operator(TMBRIDGE_OT_BrowseGame.bl_idname, icon="FILE_FOLDER")
+
+
+def _path_choice_items(operator, _context):
+    return _path_choices.get(operator.preference, ((), (), 0))[1]
+
+
+class TMBRIDGE_OT_FindPath(bpy.types.Operator):
+    """Find a folder or suggest a location for this preference"""
+
+    bl_idname = "trackmania_blender_bridge.find_path"
+    bl_label = "Select Path"
+
+    __annotations__ = {
+        "preference": StringProperty(options={"HIDDEN"}),
+        "previous": StringProperty(options={"HIDDEN", "SKIP_SAVE"}),
+        "search_serial": IntProperty(options={"HIDDEN", "SKIP_SAVE"}),
+        "choice": EnumProperty(name="Path", items=_path_choice_items),
+    }
+
+    def invoke(self, context, _event):
+        from GBXBPY.path_discovery import candidates
+
+        global _path_search_serial
+        addon = context.preferences.addons.get(ADDON_ID)
+        if addon is None or self.preference not in PATH_PROPERTIES:
+            self.report({"ERROR"}, "Path preference is unavailable")
+            return {"CANCELLED"}
+        prefs = addon.preferences
+        configured = {
+            name: bpy.path.abspath(getattr(prefs, name))
+            for name in PATH_PROPERTIES if getattr(prefs, name)
+        }
+        search_name = self.preference
+        if search_name.startswith("custom_gamedata_"):
+            family = search_name.removeprefix("custom_gamedata_")
+            if game_paths.game_family(configured.get("trackmania_dir", "")) != family:
+                self.report({"WARNING"}, "Select this game before searching for its GameData")
+                return {"CANCELLED"}
+            search_name = "gamedata_dir"
+        found = candidates(search_name, configured)
+        if not found:
+            self.report({"WARNING"}, "No folder found; choose a folder manually")
+            return {"CANCELLED"}
+        items = [(f"PATH_{i}", item.path, "Suggested location" if item.suggested else "Existing folder")
+                 for i, item in enumerate(found)]
+        _path_search_serial += 1
+        self.search_serial = _path_search_serial
+        _path_choices[self.preference] = (found, items, self.search_serial)
+        self.choice = "PATH_0"
+        self.previous = getattr(prefs, self.preference)
+        if len(found) == 1 and not self.previous and not found[0].suggested:
+            return self.execute(context)
+        return context.window_manager.invoke_props_dialog(self, width=600)
+
+    def draw(self, _context):
+        found, _items, serial = _path_choices.get(self.preference, ((), (), 0))
+        if serial != self.search_serial:
+            self.layout.label(text="Search results changed; search again", icon="ERROR")
+            return
+        if self.previous:
+            self.layout.label(text="Replace the existing path?", icon="QUESTION")
+        self.layout.prop(self, "choice", text="")
+        index = int(self.choice[5:]) if self.choice.startswith("PATH_") and self.choice[5:].isdigit() else -1
+        if 0 <= index < len(found) and found[index].suggested:
+            self.layout.label(text="Suggested location; folder does not exist yet", icon="INFO")
+
+    def execute(self, context):
+        addon = context.preferences.addons.get(ADDON_ID)
+        found, _items, serial = _path_choices.get(self.preference, ((), (), 0))
+        if (addon is None or self.preference not in PATH_PROPERTIES
+                or not self.choice.startswith("PATH_") or not self.choice[5:].isdigit()):
+            self.report({"ERROR"}, "Path selection is no longer available; search again")
+            return {"CANCELLED"}
+        index = int(self.choice[5:])
+        if (self.search_serial != serial or index >= len(found)
+                or getattr(addon.preferences, self.preference) != self.previous):
+            self.report({"ERROR"}, "Path selection changed; search again")
+            return {"CANCELLED"}
+        candidate = found[index]
+        if not candidate.suggested and not os.path.isdir(candidate.path):
+            self.report({"ERROR"}, "Detected folder no longer exists; search again")
+            return {"CANCELLED"}
+        if candidate.suggested and os.path.exists(candidate.path) and not os.path.isdir(candidate.path):
+            self.report({"ERROR"}, "Suggested location is not a folder; search again")
+            return {"CANCELLED"}
+        setattr(addon.preferences, self.preference, candidate.path)
+        return {"FINISHED"}
 
 
 def _draw_upgrade(col, prefs) -> None:
     """Build-directory upgrade and pycache tools (preferences and Upgrade panel)."""
+    row = col.row(align=True)
+    row.prop(prefs, "build_dir", text="Upgrade Folder")
+    row.operator(TMBRIDGE_OT_FindPath.bl_idname, text="", icon="VIEWZOOM").preference = "build_dir"
     row = col.row()
     row.enabled = bool(prefs.build_dir) and os.path.isdir(bpy.path.abspath(prefs.build_dir))
     op_text = "Upgrade from Build Directory"
@@ -580,7 +882,9 @@ def _check_upgrade_available() -> bool:
         if addon is None:
             _upgrade_available = False
             return False
-        build_dir = bpy.path.abspath(addon.preferences.build_dir or "")
+        build_dir = addon.preferences.build_dir
+        if build_dir:
+            build_dir = bpy.path.abspath(build_dir)
         if not build_dir or not os.path.isdir(build_dir):
             _upgrade_available = False
             return False
@@ -616,6 +920,8 @@ def _get_gamedata_dir(context) -> str:
     """The game library folder (created when missing, so imports can fill it)."""
     addon = context.preferences.addons.get(ADDON_ID)
     path = _openplanet_bridge.library_dir(addon.preferences if addon is not None else None)
+    if not path:
+        return ""
     try:
         os.makedirs(path, exist_ok=True)
     except OSError as exc:
@@ -630,7 +936,7 @@ def _make_skin_library(context, *, download: bool = True):
     are downloaded into ``<skin cache>/Locators``.
     """
     from GBXBPY.resolve.locators import LocatorCache
-    from GBXBPY.resolve.skins import SkinLibrary, default_cache_dir, default_packs_dirs, default_user_dirs
+    from GBXBPY.resolve.skins import SkinLibrary, default_cache_dir
 
     addon = context.preferences.addons.get(ADDON_ID)
     prefs = addon.preferences if addon is not None else None
@@ -639,26 +945,35 @@ def _make_skin_library(context, *, download: bool = True):
         value = getattr(prefs, name, "") if prefs is not None else ""
         return bpy.path.abspath(value) if value else ""
 
-    packs = pref_dir("packs_dir")
     game = pref_dir("trackmania_dir")
-    if not packs and game:
-        packs = os.path.join(game, "Packs")
-    if packs and not os.path.isdir(packs):
-        log.warning("Configured game Packs directory does not exist: %s", packs)
-    user = pref_dir("user_skins_dir")
-    cache = pref_dir("skin_cache_dir") or default_cache_dir()
+    planet = pref_dir("openplanet_dir")
+    user, common = game_paths.nadeo_dirs(game, planet)
+    if not user or not os.path.isdir(user):
+        user = pref_dir("user_skins_dir")
+    packs = [os.path.join(game, "Packs")] if game else []
+    if common:
+        packs.append(os.path.join(common, "PacksCache"))
+    cache = default_cache_dir()
+    game_cache = os.path.join(common, "Cache") if common else ""
+    if not os.path.isdir(game_cache):
+        game_cache = ""
     return SkinLibrary(
-        [packs] if packs else default_packs_dirs(),
-        [user] if user else default_user_dirs(),
+        packs,
+        [user] if user else [],
         cache,
-        LocatorCache(os.path.join(cache, "Locators")) if download else None,
+        LocatorCache(os.path.join(cache, "Locators"), game_cache_dir=game_cache) if download and cache else None,
     )
+
+
+def _show_console_on_import(context) -> None:
+    addon = context.preferences.addons.get(ADDON_ID)
+    if addon is not None and addon.preferences.show_console_on_import:
+        _ensure_system_console_visible()
 
 
 def _ensure_system_console_visible() -> None:
     """Show Blender's system console on Windows if it isn't already visible.
 
-    Map imports can take 10–40 minutes; users need to see live progress logs.
     No-op on non-Windows platforms or if the console state can't be queried.
     """
     # wm.console_toggle crashes Blender without a window manager UI (-b).
@@ -666,16 +981,21 @@ def _ensure_system_console_visible() -> None:
         return
     try:
         import ctypes
+        from ctypes import wintypes
+
         kernel32 = ctypes.windll.kernel32
         user32 = ctypes.windll.user32
+        kernel32.GetConsoleWindow.restype = wintypes.HWND
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
         hwnd = kernel32.GetConsoleWindow()
         if not hwnd or not user32.IsWindowVisible(hwnd):
             try:
                 bpy.ops.wm.console_toggle()
-            except Exception as e:  # noqa: BLE001
-                log.debug("wm.console_toggle failed: %s", e)
-    except Exception as e:  # noqa: BLE001
-        log.debug("Could not ensure system console visibility: %s", e)
+            except RuntimeError as exc:
+                log.warning("Could not show the system console: %s", exc)
+    except (AttributeError, OSError) as exc:
+        log.warning("Could not determine system console visibility: %s", exc)
 
 
 class TMBRIDGE_OT_ImportMaterial(bpy.types.Operator, ImportHelper):
@@ -702,7 +1022,7 @@ class TMBRIDGE_OT_ImportMaterial(bpy.types.Operator, ImportHelper):
         default=False,
     )
 
-    @_progress.tracked("Importing Material")
+    @_progress.tracked("Importing Material", importing=True)
     def execute(self, context):
         if not self.filepath or not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"File not found: {self.filepath}")
@@ -1296,7 +1616,7 @@ class TMBRIDGE_OT_ImportMesh(bpy.types.Operator, ImportHelper):
         min=1,
     )
 
-    @_progress.tracked("Importing Mesh")
+    @_progress.tracked("Importing Mesh", importing=True)
     def execute(self, context):
         if not self.filepath or not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"File not found: {self.filepath}")
@@ -1467,16 +1787,18 @@ def _build_external_entity_ref(
         try:
             from GBXBPY.io import read_gbx
             from GBXBPY.registry import dispatch
-            from GBXBPY import cache as _gbx_cache
+            # from GBXBPY import cache as _gbx_cache  # Remove after 0.0.18.
             import GBXBPY.load  # noqa: F401
 
             def _do_parse(p: str):
                 raw = read_gbx(p, recursive=False)
                 return dispatch(raw, source_path=p, resolver=resolver)
 
-            parsed = _gbx_cache.cached_load(
-                abs_path, _do_parse, label=entity.model_path,
-            )
+            # Persistent parse cache disabled; remove this code after 0.0.18.
+            # parsed = _gbx_cache.cached_load(
+            #     abs_path, _do_parse, label=entity.model_path,
+            # )
+            parsed = _do_parse(abs_path)
         except Exception as e:  # noqa: BLE001
             log.warning("external entity %s: parse failed (%s)", label, e)
             parsed = None
@@ -1874,15 +2196,15 @@ def _apply_anim_driver(obj, drv, scene) -> None:
 
 
 class TMBRIDGE_OT_ImportItem(bpy.types.Operator, ImportHelper):
-    """Import a Trackmania .Item.Gbx (CGameItemModel) via GBXBPY."""
+    """Import a Trackmania item or standalone Mesh Modeller crystal via GBXBPY."""
 
     bl_idname = "trackmania_blender_bridge.import_item"
-    bl_label = "Trackmania Item (.Item.Gbx)"
+    bl_label = "Trackmania Item / Crystal (.Gbx)"
     bl_options = {"REGISTER", "UNDO"}
 
     filename_ext = ".Gbx"
     filter_glob: StringProperty(
-        default="*.Item.Gbx;*.item.gbx",
+        default="*.Item.Gbx;*.item.gbx;*.Crystal.Gbx;*.crystal.gbx",
         options={"HIDDEN"},
         maxlen=255,
     )
@@ -1894,7 +2216,7 @@ class TMBRIDGE_OT_ImportItem(bpy.types.Operator, ImportHelper):
         min=1,
     )
 
-    @_progress.tracked("Importing Item")
+    @_progress.tracked("Importing Item", importing=True)
     def execute(self, context):
         if not self.filepath or not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"File not found: {self.filepath}")
@@ -2046,7 +2368,7 @@ class TMBRIDGE_OT_ImportPrefab(bpy.types.Operator, ImportHelper):
             progress=progress,
         )
 
-    @_progress.tracked("Importing Prefab")
+    @_progress.tracked("Importing Prefab", importing=True)
     def execute(self, context):
         if not self.filepath or not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"File not found: {self.filepath}")
@@ -2430,27 +2752,51 @@ def _build_light_templates(gbx_mesh):
     templates: list = []
     for la in getattr(gbx_mesh, "lights", None) or []:
         ref = la.light_path or la.name
+        approximation = ""
         if la.light_type:
-            light = _get_or_create_light_data(ref)
+            light = _get_or_create_light_data(la.name or ref)
             light.type = la.light_type
             light.color = la.color
             if la.intensity is not None:
                 light.energy = _TM_LIGHT_DEFAULTS["energy"] * la.intensity
             if la.distance is not None:
                 light.cutoff_distance = la.distance
-            templates.append((light, _tm_iso4_to_blender_matrix(la.transform)))
-            continue
-        if not ref:
-            continue
-        # Only emit lights whose noderef looks like a real Light.Gbx \u2014
-        # mirrors legacy filter and avoids spawning lights for unrelated
-        # named noderefs (collision shapes, etc.).
-        if ".light.gbx" not in ref.lower():
-            continue
-        templates.append((
-            _get_or_create_light_data(ref),
-            _tm_iso4_to_blender_matrix(la.transform),
-        ))
+            if la.light_type == "SPOT" and la.spot_outer_angle is not None:
+                limits = light.bl_rna.properties["spot_size"]
+                angle = math.radians(la.spot_outer_angle)
+                light.spot_size = max(limits.hard_min, min(limits.hard_max, angle))
+                if not math.isclose(light.spot_size, angle, abs_tol=1e-6):
+                    approximation = (
+                        f"Spot cone {la.spot_outer_angle:g} degrees is outside Blender's supported range; "
+                        f"using {math.degrees(light.spot_size):g} degrees"
+                    )
+                    logging.getLogger(LOG_ROOT).warning("%s: %s", ref, approximation)
+                if la.spot_inner_angle is not None and light.spot_size > 0:
+                    outer = math.degrees(light.spot_size)
+                    light.spot_blend = max(0.0, min(1.0, 1.0 - la.spot_inner_angle / outer))
+            if la.emitting_radius is not None:
+                light.shadow_soft_size = la.emitting_radius
+            if la.use_shadow is not None:
+                light.use_shadow = la.use_shadow
+        else:
+            if not ref or ".light.gbx" not in ref.lower():
+                continue
+            light = _get_or_create_light_data(ref)
+        for key in list(light.keys()):
+            if key.startswith("tm_light_") or key == "tm_night_only":
+                del light[key]
+        for key, value in la.metadata.items():
+            light["tm_light_" + key] = value
+        for field in ("intensity", "distance", "spot_inner_angle", "spot_outer_angle",
+                      "emitting_radius", "use_shadow"):
+            value = getattr(la, field)
+            if value is not None:
+                light["tm_light_" + field] = value
+        if la.night_only is not None:
+            light["tm_night_only"] = la.night_only
+        if approximation:
+            light["tm_light_approximation"] = approximation
+        templates.append((light, _tm_iso4_to_blender_matrix(la.transform)))
     return templates
 
 
@@ -3093,7 +3439,7 @@ class TMBRIDGE_OT_ImportED(bpy.types.Operator, ImportHelper):
         min=-1,
     )
 
-    @_progress.tracked("Importing Block/Clip")
+    @_progress.tracked("Importing Block/Clip", importing=True)
     def execute(self, context):
         if not self.filepath or not os.path.isfile(self.filepath):
             self.report({"ERROR"}, f"File not found: {self.filepath}")
@@ -3453,11 +3799,12 @@ class TMBRIDGE_OT_CleanBlendFile(bpy.types.Operator):
 
     bl_idname = "trackmania_blender_bridge.clean_blend_file"
     bl_label = "Clean Blend File"
-    bl_description = "Remove all scenes, objects, meshes, materials, etc. from the current blend file"
+    bl_description = "Remove scene data and images from the current blend file (image files are not deleted)"
     bl_options = {"REGISTER", "UNDO"}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_confirm(self, event)
+        return context.window_manager.invoke_confirm(
+            self, event, message="Clear scene data and images? Unsaved images will be lost.")
 
     def execute(self, _context):
         for scene in bpy.data.scenes[1:]:
@@ -3467,10 +3814,15 @@ class TMBRIDGE_OT_CleanBlendFile(bpy.types.Operator):
         for key in list(default_scene.keys()):
             if key.startswith("tm_"):
                 del default_scene[key]
+        default_scene.property_unset("tm_imported_material")
+        default_scene.property_unset("tm_trimsheet")
         for obj in list(default_scene.collection.objects):
             bpy.data.objects.remove(obj, do_unlink=True)
         for coll in list(default_scene.collection.children):
             _remove_collection_recursive(coll)
+        for image in list(bpy.data.images):
+            if image.source != "VIEWER":
+                bpy.data.images.remove(image, do_unlink=True)
 
         while True:
             count = bpy.data.orphans_purge(
@@ -4113,6 +4465,11 @@ def _sync_developer_ui(enabled: bool) -> None:
 
 CLASSES = (
     TMBRIDGE_OT_InstallDependencies,
+    TMBRIDGE_OT_PathInfo,
+    TMBRIDGE_OT_RefreshGames,
+    TMBRIDGE_OT_BrowseGame,
+    TMBRIDGE_MT_GamePaths,
+    TMBRIDGE_OT_FindPath,
     TMBRIDGE_AddonPreferences,
     TMBRIDGE_OT_ImportMaterial,
     TMBRIDGE_OT_ImportMesh,

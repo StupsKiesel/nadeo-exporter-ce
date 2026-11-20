@@ -227,6 +227,48 @@ for _name in ("nice.structs", "nice.construct", "tm2020.nice.parser", "tm2020.ni
     logging.getLogger(_name).addFilter(_PROBE_FILTER)
 
 
+def check_parsed_light(parsed) -> FileCheck:
+    """Require a complete CPlugLight parse, without interpreting its effects."""
+    if getattr(parsed, "classId", None) != 0x0901D000:
+        return FileCheck(False, "not a CPlugLight")
+    errors = getattr(parsed, "_errors", None)
+    if errors:
+        return FileCheck(False, "; ".join(map(str, errors)))
+    body = getattr(parsed, "body", None)
+    if not isinstance(body, dict):
+        return FileCheck(False, "missing CPlugLight body")
+    settings = body.get(0x0901D004)
+    if not isinstance(settings, dict) or "_chunkParseFailed" in settings:
+        return FileCheck(False, "missing or failed CPlugLight settings")
+    bodies = [body]
+    model_body = getattr(settings.get("gxLightModel"), "body", None)
+    if isinstance(model_body, dict):
+        bodies.append(model_body)
+    for chunks in bodies:
+        if 0xFACADE01 not in chunks or "_bodyParseFailed" in chunks:
+            return FileCheck(False, "incomplete light body")
+        if any(isinstance(chunk, dict) and "_chunkParseFailed" in chunk
+               for chunk in chunks.values()):
+            return FileCheck(False, "failed light chunk")
+    return FileCheck(True)
+
+
+def check_light(data: bytes) -> FileCheck:
+    """Validate a hook replacement without loading or fetching external references."""
+    from ..errors import ParseError
+    from ..io import read_gbx_bytes
+
+    previous = getattr(_quiet, "active", False)
+    _quiet.active = True
+    try:
+        parsed = read_gbx_bytes(data, source_path="<light recovery>", external_loader=_no_external)
+    except ParseError as exc:
+        return FileCheck(False, str(exc))
+    finally:
+        _quiet.active = previous
+    return check_parsed_light(parsed)
+
+
 def _nice_parses(data: bytes) -> bool:
     """True when NICE parses the whole file without chunk or body errors."""
     _quiet.active = True

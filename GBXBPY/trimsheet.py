@@ -64,6 +64,65 @@ def infer_texture_regions(
         if len(components) > 1:
             return components
 
+    def nested_bands() -> list[TrimCandidate]:
+        # A separator may span only one parent region; global cuts would
+        # incorrectly extend it through unrelated parts of the texture.
+        split_count = 0
+        axes = set()
+
+        def split(x0: int, y0: int, x1: int, y1: int):
+            nonlocal split_count
+            choices = []
+            for horizontal, start, end, other_start, other_end, full_length in (
+                (True, y0, y1, x0, x1, height),
+                (False, x0, x1, y0, y1, width),
+            ):
+                minimum = max(4, math.ceil(full_length / 16))
+                if end - start < minimum * 2 or other_end - other_start < 4:
+                    continue
+                scores = []
+                for index in range(start + 1, end):
+                    differences = []
+                    for offset in range(other_start, other_end):
+                        a = pixels[index - 1][offset] if horizontal else pixels[offset][index - 1]
+                        b = pixels[index][offset] if horizontal else pixels[offset][index]
+                        differences.append(sum(abs(a[c] - b[c]) for c in range(3)) / 3)
+                    scores.append(median(differences))
+                midpoint = (start + end) // 2
+                threshold = max(.06, median(scores) * 4)
+                center = midpoint - start - 1
+                left = max(scores[max(0, center - 2):center])
+                right = max(scores[center + 1:min(len(scores), center + 3)])
+                strength = max(scores[center], min(left, right))
+                if strength >= threshold:
+                    choices.append((strength / threshold, horizontal, midpoint))
+            if not choices:
+                return [(x0, y0, x1, y1)]
+            split_count += 1
+            if split_count > 31:
+                return None
+            _, horizontal, midpoint = max(choices)
+            axes.add(horizontal)
+            if horizontal:
+                first = split(x0, y0, x1, midpoint)
+                second = split(x0, midpoint, x1, y1) if first is not None else None
+            else:
+                first = split(x0, y0, midpoint, y1)
+                second = split(midpoint, y0, x1, y1) if first is not None else None
+            return first + second if first is not None and second is not None else None
+
+        regions = split(0, 0, width, height)
+        if regions is None or len(axes) < 2:
+            return []
+        return [
+            TrimCandidate((x0 / width, y0 / height, x1 / width, y1 / height), "TEXTURE_BAND")
+            for x0, y0, x1, y1 in regions
+        ]
+
+    nested = nested_bands()
+    if nested:
+        return nested
+
     def cuts(horizontal: bool) -> list[int]:
         length, span = (height, width) if horizontal else (width, height)
         scores = []

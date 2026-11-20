@@ -23,7 +23,7 @@ from .clips import hide_ghost_baked_duplicates, plan_clips, uses_baked_clips
 from .decoration_map import collection_grid, plan_decoration_map, resolve_absolute_height
 from .dependencies import Dependencies
 from .environment import plan_environment
-from .inherited_modifiers import baked_modifiers
+from .inherited_modifiers import baked_modifiers, unit_cells
 from .placement import grid_matrix
 from .scene import ImportOptions, Placement, ScenePlan
 from .terrain import hide_clip_covered_grass, hide_occupied_terrain
@@ -68,6 +68,7 @@ def plan_grid_block(
         block.mobil_index, block.mobil_variant_index,
     )
     size = (1, 1, 1)
+    variant = None
     if path is None:
         plan.issue("missing_block", block.name, "Stock block/clip definition not found")
     elif isinstance(asset, (Block, Clip)):
@@ -106,6 +107,12 @@ def plan_grid_block(
             occupancy.append((placement, block, variant, archetype))
     elif asset is not None:
         plan.issue("unsupported_block", path, f"Expected Block/Clip, got {type(asset).__name__}")
+    # Make Editable bundles baked clips with the authored block they finish.
+    placement.metadata["tm_block_is_clip"] = isinstance(asset, Clip)
+    offsets = [tuple(u.relative_offset) for u in variant.units] if variant is not None else []
+    placement.metadata["tm_block_cells"] = tuple(
+        value for cell in unit_cells(block, offsets) for value in cell
+    )
     placement.matrix = grid_matrix(block.coords, block.direction, size, grid)
     return placement
 
@@ -120,6 +127,10 @@ def plan_texture_mod(map_asset: Map, skins: SkinLibrary | None, plan: ScenePlan)
         cache = default_cache_dir()
         locators = LocatorCache(os.path.join(cache, "Locators")) if plan.options.download_locators else None
         skins = SkinLibrary(default_packs_dirs(), default_user_dirs(), cache, locators)
+    if not skins.cache_dir:
+        plan.issue("missing_texture_mod", map_asset.mod_pack_path or map_asset.mod_pack_url,
+                   "Skin Cache Directory is not configured or skin resources are disabled")
+        return None
     mod, problem = load_texture_mod(
         map_asset.mod_pack_path, map_asset.mod_pack_url, skins,
         os.path.join(skins.cache_dir, "TextureMods"),
@@ -200,11 +211,14 @@ def _plan_asset(
         plan.texture_mod = plan_texture_mod(map_asset, skins, plan)
     if options.club_textures:
         from ..resolve.club_textures import load_club_textures
-        from ..resolve.skins import default_cache_dir
         import urllib.error
+
+        from ..resolve.skins import default_cache_dir
 
         cache = skins.cache_dir if skins is not None else default_cache_dir()
         try:
+            if not cache:
+                raise ValueError("Skin Cache Directory is not configured or skin resources are disabled")
             plan.club_textures, problems = load_club_textures(
                 options.club_textures, os.path.join(cache, "ClubTextures"),
                 progress=lambda f, m: progress(0.01 + 0.009 * f, m),
@@ -214,7 +228,7 @@ def _plan_asset(
         else:
             for problem in problems:
                 plan.issue("club_textures_unavailable", str(options.club_textures), problem)
-    library = AssetLibrary(dependencies, skins)
+    library = AssetLibrary(dependencies, skins if options.import_skins else None)
     records = []
     occupancy = []
     started = time.perf_counter()
@@ -257,7 +271,7 @@ def _plan_asset(
     plan_absolute(map_asset, library)
     if options.import_decoration:
         progress(0.9, "Planning decoration surroundings")
-        plan_decoration_map(map_asset, dependencies, skins)
+        plan_decoration_map(map_asset, dependencies, skins if options.import_skins else None)
     if options.import_lighting:
         progress(0.95, "Resolving decoration mood")
         plan.environment = plan_environment(map_asset, dependencies)

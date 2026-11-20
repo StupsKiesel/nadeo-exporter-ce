@@ -93,11 +93,14 @@ def resources(context, *, fetch_missing=False):
     server = None
     try:
         queue = _openplanet_bridge.queue()
+        if fetch_missing and not _openplanet_bridge.extract_dir():
+            raise ValueError("Set the Openplanet folder in addon preferences")
         if queue is None and fetch_missing:
             server = _openplanet_bridge.start_import_server()
             queue = server.queue
         provider = LibraryProvider(
-            path, queue, fetch=fetch_missing or (queue is not None and queue.plugin_connected()),
+            path, queue, fetch=bool(_openplanet_bridge.extract_dir()) and
+            (fetch_missing or (queue is not None and queue.plugin_connected())),
             extract_dir=_openplanet_bridge.extract_dir(),
         )
         with library.active(provider):

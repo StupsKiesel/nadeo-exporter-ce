@@ -12,7 +12,8 @@ Endpoints (JSON unless noted):
     Queue an extract request; returns ``{"id": ...}`` (201).
     Explicit diagnostics also accept ``extract_hook_tree`` (one tree) or
     ``extract_hook`` (one GBX). Hook extraction can crash the game;
-    PlugResource.Gbx is rejected. Imports and library checks use ``extract``.
+    Known crashers in ``HOOK_BLACKLIST`` are rejected. Normal extraction is
+    always tried first; failed GBX files can then use hook extraction.
 ``GET  /api/requests/<id>``
     Request state (``queued``/``active``/``done``/``failed``) and results.
 ``GET  /api/plugin/next?wait=<s>&game=<version>&plugin=<version>``
@@ -51,6 +52,17 @@ MAX_WAIT = 25.0
 # The plugin polls continuously; silence for this long means it is gone.
 PLUGIN_TIMEOUT = 30.0
 MAX_BODY = 64 * 1024 * 1024
+
+# Basenames, case-insensitive. Mirror this list in the Openplanet plugin.
+HOOK_BLACKLIST = {
+    "plugresource.gbx": "hook extraction crashes TM2020",
+}
+
+
+def hook_block_reason(path: str) -> str:
+    name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+    return HOOK_BLACKLIST.get(name, "")
+
 
 QUEUED, ACTIVE, DONE, FAILED = "queued", "active", "done", "failed"
 
@@ -161,8 +173,10 @@ class JobQueue:
             raise ValueError("hook diagnostic requires exactly one VegetTreeModel.Gbx file")
         if kind == "extract_hook" and (len(unique) != 1 or not unique[0].lower().endswith(".gbx")):
             raise ValueError("hook diagnostic requires exactly one GBX file")
-        if kind == "extract_hook" and unique[0].lower().endswith("/plugresource.gbx"):
-            raise ValueError("PlugResource.Gbx hook extraction crashes TM2020; use normal extraction only")
+        if kind in ("extract_hook", "extract_hook_tree"):
+            reason = hook_block_reason(unique[0])
+            if reason:
+                raise ValueError(f"{unique[0]}: {reason}; use normal extraction only")
         with self._cond:
             job = Job(str(next(self._ids)), kind, unique)
             self._jobs[job.id] = job

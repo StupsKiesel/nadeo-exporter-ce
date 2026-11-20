@@ -70,7 +70,7 @@ def _run(command: list[str]) -> subprocess.CompletedProcess:
 
 
 def install(target_dir: str) -> None:
-    """Install only unavailable packages, then verify in a fresh interpreter."""
+    """Install or repair unavailable packages, then verify in a fresh interpreter."""
     global restart_required
     packages = missing_dependencies()
     if not packages:
@@ -85,6 +85,8 @@ def install(target_dir: str) -> None:
     _run([
         python, "-m", "pip", "--isolated", "install",
         "--disable-pip-version-check", "--no-input",
+        # Blender upgrades can leave package directories with older Python binaries.
+        "--upgrade",
         "--target", target_dir, *packages,
     ])
     # Avoid reloading binary packages or partially imported modules in Blender.

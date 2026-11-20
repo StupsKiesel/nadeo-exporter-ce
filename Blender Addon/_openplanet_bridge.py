@@ -35,6 +35,11 @@ _watched_jobs: list[str] = []
 # Manual requests whose results are moved into a custom library when they finish.
 _install_jobs: set[str] = set()
 
+_PLUGIN_VARIANTS = {
+    "trackmania": ("BlenderBridgeExtractor", "Blender Bridge Extractor - Trackmania 2020"),
+    "maniaplanet": ("BlenderBridgeExtractorManiaPlanet", "Blender Bridge Extractor - ManiaPlanet"),
+}
+
 
 def _prefs():
     from . import ADDON_ID
@@ -44,40 +49,58 @@ def _prefs():
 
 
 def library_dir(prefs=None) -> str:
-    """The game library folder: the preference, or Openplanet's extract GameData."""
+    """Return the selected game's library, or Openplanet's extraction folder."""
+    from GBXBPY.game_paths import game_family
+
     prefs = prefs if prefs is not None else _prefs()
-    path = getattr(prefs, "gamedata_dir", "") if prefs is not None else ""
-    if path:
-        return os.path.normpath(bpy.path.abspath(path))
-    return extract_dir(prefs)
+    if prefs is None:
+        return ""
+    if not getattr(prefs, "custom_libraries", False):
+        return extract_dir(prefs)
+    game = getattr(prefs, "trackmania_dir", "")
+    family = game_family(bpy.path.abspath(game)) if game else ""
+    if family != "trackmania":
+        return ""
+    path = getattr(prefs, "custom_gamedata_" + family, "")
+    return os.path.normpath(bpy.path.abspath(path)) if path else ""
 
 
 def extract_dir(prefs=None) -> str:
     """Openplanet's ``Extract/GameData``, where the plugin writes; files are moved from here into the library."""
-    return os.path.join(openplanet_root(prefs), "Extract", "GameData")
+    root = openplanet_root(prefs)
+    return os.path.join(root, "Extract", "GameData") if root else ""
 
 
 def openplanet_root(prefs=None) -> str:
     """Configured Openplanet user root, shared by extraction and plugin tools."""
-    from GBXBPY.library import openplanet_dir
-
     prefs = prefs if prefs is not None else _prefs()
     path = getattr(prefs, "openplanet_dir", "") if prefs is not None else ""
-    return os.path.normpath(bpy.path.abspath(path)) if path else openplanet_dir()
+    return os.path.normpath(bpy.path.abspath(path)) if path else ""
 
 
-def plugin_source_dir() -> str:
-    """Plugin folder bundled with the addon, or the repository copy when run from source."""
-    from GBXBPY.library import PLUGIN_ID
+def _plugin_family(prefs=None) -> str:
+    from GBXBPY.game_paths import game_family
+
+    prefs = prefs if prefs is not None else _prefs()
+    game = getattr(prefs, "trackmania_dir", "") if prefs is not None else ""
+    return game_family(bpy.path.abspath(game)) if game else ""
+
+
+def plugin_source_dir(prefs=None) -> str:
+    """Return the selected game's bundled plugin source, or an empty string if unsupported."""
+    variant = _PLUGIN_VARIANTS.get(_plugin_family(prefs))
+    if variant is None:
+        return ""
+    source_name = variant[0]
 
     here = os.path.dirname(os.path.abspath(__file__))
     for candidate in (
-        os.path.join(here, "openplanet_plugin", PLUGIN_ID),
-        os.path.join(os.path.dirname(here), "Openplanet Plugin", PLUGIN_ID),
+        os.path.join(here, "openplanet_plugin", source_name),
+        os.path.join(os.path.dirname(here), "Openplanet Plugin", source_name),
     ):
         if os.path.isfile(os.path.join(candidate, "info.toml")):
             return candidate
-    return os.path.join(here, "openplanet_plugin", PLUGIN_ID)
+    return os.path.join(here, "openplanet_plugin", source_name)
 
 
 def split_request_paths(text: str) -> list[str]:
@@ -108,10 +131,25 @@ def _wait_for_plugin(q) -> bool:
     return True
 
 
+def _validate_game_openplanet(prefs) -> None:
+    global server_error
+    from GBXBPY.game_paths import openplanet_mismatch
+
+    game = bpy.path.abspath(prefs.trackmania_dir) if prefs is not None and prefs.trackmania_dir else ""
+    if openplanet_mismatch(game, openplanet_root(prefs)):
+        server_error = "The Openplanet folder does not match the selected game"
+        raise OSError(server_error)
+
+
 def start_import_server():
     """Start the server for imports or repairs; surface bind failures."""
+    global server_error
     from GBXBPY.library import get_server
 
+    _validate_game_openplanet(_prefs())
+    if not openplanet_root() or not library_dir():
+        server_error = "Set the GameData and Openplanet folders in addon preferences"
+        raise OSError(server_error)
     if _developer_server is not None and get_server() is _developer_server and _developer_server.running:
         return _developer_server
     return _start_server()
@@ -122,6 +160,10 @@ def _start_server():
     from GBXBPY.library import start_server
 
     prefs = _prefs()
+    _validate_game_openplanet(prefs)
+    if not openplanet_root() or not library_dir():
+        server_error = "Set the GameData and Openplanet folders in addon preferences"
+        raise OSError(server_error)
     port = int(getattr(prefs, "bridge_port", 1337)) if prefs is not None else 1337
     try:
         server = start_server(port)
@@ -242,6 +284,9 @@ class TMBRIDGE_OT_RefreshGameIndex(bpy.types.Operator):
     def execute(self, _context):
         from GBXBPY.library import LibraryProvider
 
+        if not library_dir() or not extract_dir():
+            self.report({"ERROR"}, "Set the GameData and Openplanet folders in addon preferences")
+            return {"CANCELLED"}
         try:
             server = start_import_server()
         except OSError as exc:
@@ -296,6 +341,9 @@ class TMBRIDGE_OT_CheckLibrary(bpy.types.Operator):
 
         root = library_dir()
         extract_root = extract_dir()
+        if not root or not extract_root:
+            self.report({"ERROR"}, "Set the GameData and Openplanet folders in addon preferences")
+            return {"CANCELLED"}
         if not os.path.isdir(root):
             self.report({"WARNING"}, f"Library folder does not exist yet: {root}")
             return {"CANCELLED"}
@@ -372,8 +420,10 @@ def _install(root, extract_root, index, results, label, offset, total) -> tuple[
 
 
 def _hook_candidate(rel: str, reason: str) -> bool:
+    from GBXBPY.library.server import hook_block_reason
+
     key = rel.lower()
-    return (key.endswith(".gbx") and not key.endswith("plugresource.gbx")
+    return (key.endswith(".gbx") and not hook_block_reason(rel)
             and not reason.startswith("NOTFOUND"))
 
 
@@ -565,6 +615,9 @@ class TMBRIDGE_OT_FillLibrary(bpy.types.Operator):
     def invoke(self, context, _event):
         from GBXBPY.library.provider import IMPORT_UNUSED_SUFFIXES
 
+        if not library_dir() or not extract_dir():
+            self.report({"ERROR"}, "Set the GameData and Openplanet folders in addon preferences")
+            return {"CANCELLED"}
         index, missing, unavailable = _fill_plan(library_dir(), True)
         if index is None:
             summaries = ("No game index yet; it is fetched from Trackmania first",) * 2
@@ -594,6 +647,9 @@ class TMBRIDGE_OT_FillLibrary(bpy.types.Operator):
     def execute(self, _context):
         root = library_dir()
         extract_root = extract_dir()
+        if not root or not extract_root:
+            self.report({"ERROR"}, "Set the GameData and Openplanet folders in addon preferences")
+            return {"CANCELLED"}
         include_media = self.include_media
         try:
             os.makedirs(root, exist_ok=True)
@@ -670,6 +726,9 @@ def _install_request_results(job) -> None:
     from GBXBPY.library.validate import install_extracted
 
     root, extract_root = library_dir(), extract_dir()
+    if not root or not extract_root:
+        log.error("Cannot install extracted files: GameData or Openplanet path is not configured")
+        return
     results = [r for r in job.results if r.ok]
     if not results:
         return
@@ -773,6 +832,9 @@ class TMBRIDGE_OT_RequestExtract(bpy.types.Operator):
 
     def execute(self, context):
         prefs = _prefs()
+        if not library_dir(prefs) or not extract_dir(prefs):
+            self.report({"ERROR"}, "Set the GameData and Openplanet folders in addon preferences")
+            return {"CANCELLED"}
         text = context.window_manager.clipboard if self.clipboard else getattr(prefs, "extract_request", "")
         paths = split_request_paths(text)
         if not paths:
@@ -795,16 +857,29 @@ class TMBRIDGE_OT_RequestExtract(bpy.types.Operator):
 
 
 class TMBRIDGE_OT_InstallExtractorPlugin(bpy.types.Operator):
-    """Copy the Blender Bridge Extractor plugin into OpenplanetNext/Plugins. Openplanet loads unsigned plugins only in developer mode"""
+    """Install the selected game's extractor. Openplanet requires developer signature mode"""
 
     bl_idname = "trackmania_blender_bridge.install_extractor_plugin"
     bl_label = "Install Openplanet Plugin"
 
     def execute(self, _context):
+        from GBXBPY.game_paths import openplanet_mismatch
         from GBXBPY.library import install_plugin
 
+        prefs = _prefs()
+        root = openplanet_root(prefs)
+        if not root:
+            self.report({"ERROR"}, "Set the Openplanet folder in addon preferences")
+            return {"CANCELLED"}
+        source = plugin_source_dir(prefs)
+        if not source:
+            self.report({"ERROR"}, "No extractor plugin is available for the selected game")
+            return {"CANCELLED"}
+        if openplanet_mismatch(bpy.path.abspath(prefs.trackmania_dir), root):
+            self.report({"ERROR"}, "Openplanet folder does not match the selected game")
+            return {"CANCELLED"}
         try:
-            target = install_plugin(plugin_source_dir(), openplanet_root())
+            target = install_plugin(source, root)
         except OSError as exc:
             self.report({"ERROR"}, f"Plugin install failed: {exc}")
             return {"CANCELLED"}
@@ -820,6 +895,9 @@ class TMBRIDGE_OT_OpenLibraryFolder(bpy.types.Operator):
 
     def execute(self, _context):
         root = library_dir()
+        if not root:
+            self.report({"ERROR"}, "Set the GameData folder in addon preferences")
+            return {"CANCELLED"}
         os.makedirs(root, exist_ok=True)
         bpy.ops.wm.path_open(filepath=root)
         return {"FINISHED"}
@@ -830,21 +908,31 @@ class TMBRIDGE_OT_OpenLibraryFolder(bpy.types.Operator):
 # ---------------------------------------------------------------------------
 
 
-def _plugin_version() -> str:
+def _plugin_version(prefs=None) -> str:
     from GBXBPY.library import installed_plugin_dir
 
-    path = os.path.join(installed_plugin_dir(openplanet_root()), "info.toml")
+    variant = _PLUGIN_VARIANTS.get(_plugin_family(prefs))
+    root = openplanet_root(prefs)
+    if not root or variant is None:
+        return ""
+    path = os.path.join(installed_plugin_dir(root), "info.toml")
     try:
         with open(path, encoding="utf-8") as handle:
-            match = re.search(r'^\s*version\s*=\s*"([^"]+)"', handle.read(), re.M)
+            metadata = handle.read()
     except OSError:
         return ""
-    return match.group(1) if match else "?"
+    version = re.search(r'^\s*version\s*=\s*"([^"]+)"', metadata, re.M)
+    name = re.search(r'^\s*name\s*=\s*"([^"]+)"', metadata, re.M)
+    result = version.group(1) if version else "?"
+    return result if name and name.group(1) == variant[1] else result + " (different plugin)"
 
 
-def _bundled_plugin_version() -> str:
+def _bundled_plugin_version(prefs=None) -> str:
+    source = plugin_source_dir(prefs)
+    if not source:
+        return ""
     try:
-        with open(os.path.join(plugin_source_dir(), "info.toml"), encoding="utf-8") as handle:
+        with open(os.path.join(source, "info.toml"), encoding="utf-8") as handle:
             match = re.search(r'^\s*version\s*=\s*"([^"]+)"', handle.read(), re.M)
     except OSError:
         return ""
@@ -894,7 +982,7 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
-def _running_plugin_warning() -> str:
+def _running_plugin_warning(prefs=None) -> str:
     """Message when Trackmania still runs a plugin older than the bundled one."""
     from GBXBPY.library import get_server
 
@@ -902,18 +990,28 @@ def _running_plugin_warning() -> str:
     if server is None or not server.running or not server.queue.plugin_connected():
         return ""
     running = server.queue.plugin_version or ""
-    bundled = _bundled_plugin_version()
+    bundled = _bundled_plugin_version(prefs)
     if not running or not bundled or _version_tuple(running) >= _version_tuple(bundled):
         return ""
     return f"Trackmania runs plugin v{running}; update and reload it (bundled v{bundled})"
 
 
-def draw_plugin(layout) -> None:
+def draw_plugin(layout, action_layout=None, warning_layout=None, *, prefs=None) -> None:
     """Installed vs bundled extractor plugin version and the install button."""
-    installed = _plugin_version()
-    bundled = _bundled_plugin_version()
+    from GBXBPY.game_paths import openplanet_mismatch
+
+    prefs = prefs if prefs is not None else _prefs()
     col = layout.column(align=True)
     row = col.row(align=True)
+    if _plugin_family(prefs) not in _PLUGIN_VARIANTS:
+        row.label(text="No plugin available for selected game", icon="INFO")
+        return
+    game = bpy.path.abspath(prefs.trackmania_dir)
+    if openplanet_mismatch(game, openplanet_root(prefs)):
+        row.label(text="Openplanet folder does not match game", icon="ERROR")
+        return
+    installed = _plugin_version(prefs)
+    bundled = _bundled_plugin_version(prefs)
     if not installed:
         row.label(text="Not installed", icon="ERROR")
     elif bundled and installed != bundled:
@@ -921,36 +1019,43 @@ def draw_plugin(layout) -> None:
         row.label(text=f"Installed v{installed}, bundled v{bundled}", icon="ERROR")
     else:
         row.label(text=f"Installed v{installed}", icon="CHECKMARK")
-    row.operator(TMBRIDGE_OT_InstallExtractorPlugin.bl_idname,
-                 text="Update Plugin" if installed else "Install Plugin", icon="IMPORT")
-    warning = _running_plugin_warning()
+    actions = action_layout if action_layout is not None else row
+    actions.operator(TMBRIDGE_OT_InstallExtractorPlugin.bl_idname,
+                     text="Update Plugin" if installed else "Install Plugin", icon="IMPORT")
+    warning = _running_plugin_warning(prefs)
     if warning:
-        row = col.row()
+        row = (warning_layout if warning_layout is not None else col).row()
         row.alert = True
         row.label(text=warning, icon="ERROR")
 
 
 def draw(layout, prefs, *, boxed=True) -> None:
     box = layout.box() if boxed else layout
-    row = box.row(align=True)
+    if not openplanet_root(prefs):
+        if boxed:
+            box.label(text="Openplanet", icon="LINKED")
+        box.label(text="Set the Openplanet folder in addon preferences", icon="INFO")
+        return
+    grid = box.grid_flow(columns=3, row_major=True, even_columns=True, even_rows=True, align=True)
+    title, plugin, status, port, update, folder = (grid.column(align=True) for _ in range(6))
     if boxed:
-        row.label(text="Openplanet", icon="LINKED")
-
-    draw_server(row, prefs)
-    row = box.row(align=True)
-    draw_plugin(row)
-    row = box.row(align=True)
-    row.prop(prefs, "bridge_port", text="Port", slider=True)
-    row.operator(TMBRIDGE_OT_OpenLibraryFolder.bl_idname, icon="FILE_FOLDER")
+        title.label(text="Openplanet", icon="LINKED")
+    draw_plugin(plugin, update, box, prefs=prefs)
+    draw_server(status, prefs)
+    port.prop(prefs, "bridge_port", text="Port", slider=True)
+    folder.operator(TMBRIDGE_OT_OpenLibraryFolder.bl_idname, text="Open Folder", icon="FILE_FOLDER")
 
 
 def draw_game_library(layout, prefs) -> None:
     if prefs is None:
         layout.label(text="Addon preferences not available", icon="ERROR")
         return
+    if not library_dir(prefs) or not extract_dir(prefs):
+        layout.label(text="Set the GameData and Openplanet folders in addon preferences", icon="INFO")
+        return
 
     root = library_dir(prefs)
-    warning = _running_plugin_warning()
+    warning = _running_plugin_warning(prefs)
     if warning:
         row = layout.row(align=True)
         row.alert = True
@@ -993,6 +1098,10 @@ def _draw_task(layout) -> None:
 def draw_tools(box, prefs) -> None:
     """Developer connection details and manual extraction tools."""
     from GBXBPY.library import get_server
+    if not library_dir(prefs) or not extract_dir(prefs):
+        box.label(text="Set the GameData and Openplanet folders in addon preferences", icon="INFO")
+        return
+    root = library_dir(prefs)
 
     box.prop(prefs, "bridge_port", text="Port")
     server = get_server()
@@ -1008,7 +1117,6 @@ def draw_tools(box, prefs) -> None:
         q = server.queue
         if q.plugin_connected():
             box.label(text=f"Plugin v{q.plugin_version or '?'}, game {q.game_version or '?'}")
-    root = library_dir(prefs)
     box.label(text=root, icon="FILE_FOLDER")
     label = _index_label(root)
     if label:

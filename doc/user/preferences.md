@@ -3,29 +3,38 @@
 [Back to user guide](README.md)
 
 Open *Edit > Preferences > Add-ons*, find **Nadeo Exporter Community
-Edition** and expand it. All paths can stay empty — empty means the addon
-discovers the standard location automatically. Set a path only when your
-setup differs. Invalid paths are flagged with a *"folder not found"* warning
-instead of being silently ignored.
+Edition** and expand it. The game dropdown lists detected installations and
+the currently selected one. Its menu can search again or browse manually.
+Game and Openplanet show an alert when unset or missing.
+Preferences follow setup order: Python Dependencies, Directories and Openplanet,
+then Updates, Logging and the developer options.
+
+Search checks Trackmania 2020, ManiaPlanet / Trackmania 2, Turbo and Forever
+Steam installations and common launcher locations. Detection does not mean
+the bundled extractor or older GBX formats are supported. The extractor targets
+Trackmania 2020 and ManiaPlanet; ManiaPlanet's full extraction behavior is unverified.
 
 ## Directories
 
-| Field | Empty means | Set it when |
-|---|---|---|
-| **Trackmania** | Auto-detect the Ubisoft, Steam or Epic installation. | Your game is installed somewhere unusual. Its `Packs` subfolder supplies the stock skins. |
-| **Openplanet** | `%USERPROFILE%\OpenplanetNext` | Your Openplanet user folder (the one containing `Plugins` and `Extract`) is elsewhere. This is *not* the Openplanet program folder. |
-| **User Files** | `Documents\Trackmania` | Your Trackmania user folder (the one containing your custom `Skins`) is elsewhere, e.g. not synced to Documents. |
-| **GameData** | `Extract\GameData` under the Openplanet folder. | You want imports to read from an existing extracted GameData copy instead of the Openplanet extract library. |
+| Field | Purpose |
+|---|---|
+| **Game** | Select an installation; the adjacent menu searches again or browses for a folder. |
+| **Openplanet** | Select the matching user folder containing `Plugins` and `Extract`, not the program folder. |
+| **User Files** | Resolved from the selected game's `Nadeo.ini`. If unavailable, choose a folder manually. |
+| **Custom GameData Libraries** | Optional per-game library paths. When off, the library is `<Openplanet>\Extract\GameData`. ManiaPlanet, Turbo and Forever custom libraries are disabled pending support; saved paths for these games are not used. |
 
-### Advanced Paths
+Use the info button beside **Game** to view the resolved user files, resource
+cache and read-only game-cache locations.
 
-Click **Advanced Paths** to show three optional overrides:
+Game Packs are read from the selected install and, when available, the game's
+common-data `PacksCache`. Matching locator downloads may be copied from the
+game's cache before downloading. The game cache is read-only and never cleared
+by the addon; extracted resources remain in the separate addon cache.
 
-| Field | Empty means | Notes |
-|---|---|---|
-| **Game Packs Directory** | Auto-detect the game's `Packs` folder. | Takes precedence over the *Trackmania* path for stock skins. |
-| **Parse Cache Directory** | Parse cache disabled. | Point this at any folder to cache parsed assets on disk — repeated map imports become roughly 100× faster. The cache invalidates itself when source files change; safe to delete anytime. |
-| **Skin Cache Directory** | `%LOCALAPPDATA%\TrackmaniaBlenderBridge\SkinCache` | Where skin images extracted from the game's pack archives are cached. |
+Previous GameData, Packs and custom resource-cache path preferences are retained
+but no longer active.
+To keep using an old GameData folder, enable **Custom GameData Libraries** and
+select it for the game. Existing files are not moved or deleted.
 
 ## Updates
 
@@ -36,12 +45,15 @@ readable paths.
 
 **Check for Updates** checks the newest published GitHub release, including
 pre-releases, and reports whether it is newer than the installed addon; it does
-not download or install updates. Drafts are ignored.
-**Open GitHub Repository** opens
+not download or install updates. When an installable update is found, the
+button changes to **Install** with its version; confirm the dialog and restart
+Blender afterwards. Otherwise it shows the result or a retry action. The
+pre-release checkbox is before it in the same row and is on by default; drafts
+are ignored. The link opens release notes when an update is available, or
 [nadeo-exporter-ce](https://github.com/StupsKiesel/nadeo-exporter-ce) in a browser.
 Update checks require a public repository; the addon does not authenticate to
 private repositories.
-**Upgrade Folder** remains developer-only for local build ZIPs.
+**Upgrade Folder** is in the Developer > Upgrade sidebar panel for local build ZIPs.
 
 ## Python Dependencies
 
@@ -58,7 +70,8 @@ status and extractor plugin:
 - Connection status: *Connected to Trackmania*, *Waiting for Trackmania*, or
   *Idle*.
 - Installed plugin version, with an **Install Plugin** / **Update Plugin**
-  button. If the installed version differs from the bundled one, update it.
+  button for the selected game. If the installed version or game variant differs
+  from the bundled one, update it. Turbo and Forever plugins are unavailable.
 - **Open Library Folder** opens the game library on disk.
 
 See [Openplanet plugin setup](openplanet-plugin.md) for the full workflow.
@@ -70,6 +83,10 @@ for normal use. Enabling it adds a **Developer** section to the sidebar with
 debugging, manual extraction and maintenance tools, and reveals the
 *Developer Settings* section in the map import dialog.
 
+**Developer > Quick Actions > Clear Blend** removes image datablocks as well
+as scene data, including images with fake users. Save images to disk or save a
+separate blend file first; image files on disk are not deleted.
+
 ## Tools panel
 
 The **Nadeo Exporter CE > Tools** panel is available without Developer UI.
@@ -77,9 +94,8 @@ Its **Game Library** section shows the active GameData folder and Openplanet
 index state, and provides **Check / Repair**, **Fill Missing**, **Refresh
 Index** and **Open Folder** actions. The library path setting and Openplanet/plugin status are
 available in Addon Preferences, avoiding duplicate controls in the Tools
-panel. Set **Custom Location** there to use a GameData library outside the
-default Openplanet extraction directory. The configured folder is the library
-used by imports. **Check / Repair**, **Fill Missing** and **Refresh Index**
+panel. The selected game's default or custom library is used by imports.
+**Check / Repair**, **Fill Missing** and **Refresh Index**
 start the local bridge server if needed and wait up to 30 seconds for the
 Openplanet plugin. **Fill Missing** extracts files listed in the game index
 that the library doesn't have yet. It shows the count and size first and skips
@@ -107,8 +123,8 @@ log folders are created. Disabling capture preserves existing embedded logs.
 
 | Data | Location |
 |---|---|
-| Game library (extracted game files) | `<Openplanet folder>\Extract\GameData`, unless **GameData** overrides it. Fills on demand; grows over time. |
-| Skin cache | `%LOCALAPPDATA%\TrackmaniaBlenderBridge\SkinCache`, unless overridden. Safe to delete; rebuilt as needed. |
-| Parse cache | Only where you point **Parse Cache Directory**. Safe to delete; rebuilt as needed. |
+| Game library (extracted game files) | Openplanet `Extract\GameData` or the selected custom library. Fills on demand; grows over time. |
+| Resource cache | The standard addon cache. Safe to delete; rebuilt as needed. |
+| Parse cache | Persistent parse caching is disabled; old cache files are not used. |
 | Import logs (opt-in) | Internal Text datablocks, retained when the blend file is saved. |
 | Addon preferences | Saved by Blender with your user settings; they survive addon updates. |

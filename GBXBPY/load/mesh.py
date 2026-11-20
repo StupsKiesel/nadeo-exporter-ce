@@ -16,7 +16,7 @@ import struct
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..color_tables import srgb_to_linear
-from ..coords import gbx_to_blender_vec3
+from ..coords import gbx_to_blender_vec3, multiply_matrices
 from ..errors import ParseError
 from ..model import (
     Box,
@@ -31,6 +31,8 @@ from ..model import (
     Vertex,
 )
 from ..registry import register
+from ..model.geometry import Matrix4
+from ._light import apply_light_source, light_from_user_model
 
 log = logging.getLogger("gbxbpy.load.mesh")
 
@@ -906,6 +908,45 @@ def _expand_fence_uvs_in_lod(
                 fence_vert_mask[vi] = True
 
 
+def _light_transform_values(iso: Any) -> List[float]:
+    fields = ("XX", "XY", "XZ", "YX", "YY", "YZ", "ZX", "ZY", "ZZ", "TX", "TY", "TZ")
+    return [float(getattr(iso, name, 1.0 if i in (0, 4, 8) else 0.0) or 0.0)
+            for i, name in enumerate(fields)]
+
+
+def _user_light_transform(skel: Any, socket_index: int, source_path: str) -> List[float] | None:
+    sockets = getattr(skel, "sockets", None) or []
+    if not 0 <= socket_index < len(sockets):
+        log.warning("Invalid light socket index %s in %s", socket_index, source_path)
+        return None
+    socket = sockets[socket_index]
+    loc = getattr(socket, "loc", None)
+    if loc is None:
+        log.warning("Missing light socket transform %s in %s", socket_index, source_path)
+        return None
+
+    def matrix(iso: Any) -> Matrix4:
+        xx, xy, xz, yx, yy, yz, zx, zy, zz, tx, ty, tz = _light_transform_values(iso)
+        # Skeleton Iso4 entries are serialized basis vectors, not matrix rows.
+        return ((xx, yx, zx, tx), (xy, yy, zy, ty), (xz, yz, zz, tz), (0, 0, 0, 1))
+
+    transform = matrix(loc)
+    joint_index = socket.linkedJoint
+    if joint_index != -1:
+        joints = getattr(skel, "joints", None) or []
+        if not 0 <= joint_index < len(joints):
+            log.warning("Invalid light socket joint index %s in %s", joint_index, source_path)
+            return None
+        parent = getattr(joints[joint_index], "GlobalLoc", None)
+        if parent is None:
+            log.warning("Missing light socket joint transform %s in %s", joint_index, source_path)
+            return None
+        transform = multiply_matrices(matrix(parent), transform)
+    return [transform[r][c] for r in range(3) for c in range(3)] + [
+        transform[r][3] for r in range(3)
+    ]
+
+
 @register(CLASS_ID)
 def load_mesh(
     parsed: Any,
@@ -980,57 +1021,43 @@ def load_mesh(
     # matrix when placing the light.
     lights: List[LightAttachment] = []
     if main is not None:
+        light_cache: Dict[str, Any] = {}
         user_models = getattr(main, "lightUserModels", None) or []
-        socket_models = {}
-        for inst in getattr(main, "lightInsts", None) or []:
-            if 0 <= inst.modelIndex < len(user_models):
-                socket_models[inst.socketIndex] = _body_dict(user_models[inst.modelIndex]).get(0x090F9000)
-            else:
-                log.warning("Invalid light model index %s in %s", inst.modelIndex, source_path)
-        for index, raw_light in enumerate(getattr(main, "lights", None) or []):
+        for raw_light in getattr(main, "lights", None) or []:
             la = LightAttachment()
             la.name = str(getattr(raw_light, "name", "") or "")
             if la.name.lower().endswith(".light.gbx"):
                 la.light_path = la.name
             embedded = getattr(raw_light, "u03", None)
-            if embedded is not None and _body_dict(embedded) and not la.light_path:
-                light_chunk = _body_dict(embedded).get(0x0901D004)
-                gx = getattr(light_chunk, "u01_CGxLightSpot", None)
-                la.light_type = {0x04002000: "POINT", 0x0400B000: "SPOT"}.get(
-                    getattr(gx, "classId", None), "",
-                )
-                if la.light_type:
-                    model = socket_models.get(index)
-                    if model is not None:
-                        la.color = (float(model.color_r), float(model.color_g), float(model.color_b))
-                        la.intensity = float(model.intensity)
-                        la.distance = float(model.distance)
-                else:
-                    log.warning("Unsupported embedded light type %s in %s (light %d)",
-                                getattr(gx, "classId", None), source_path, index)
+            apply_light_source(la, embedded, source_path=source_path, resolver=resolver, cache=light_cache)
             tm = getattr(raw_light, "u05", None)
             if tm is not None:
-                la.transform = [
-                    float(getattr(tm, "XX", 1.0) or 0.0),
-                    float(getattr(tm, "XY", 0.0) or 0.0),
-                    float(getattr(tm, "XZ", 0.0) or 0.0),
-                    float(getattr(tm, "YX", 0.0) or 0.0),
-                    float(getattr(tm, "YY", 1.0) or 0.0),
-                    float(getattr(tm, "YZ", 0.0) or 0.0),
-                    float(getattr(tm, "ZX", 0.0) or 0.0),
-                    float(getattr(tm, "ZY", 0.0) or 0.0),
-                    float(getattr(tm, "ZZ", 1.0) or 0.0),
-                    float(getattr(tm, "TX", 0.0) or 0.0),
-                    float(getattr(tm, "TY", 0.0) or 0.0),
-                    float(getattr(tm, "TZ", 0.0) or 0.0),
-                ]
+                la.transform = _light_transform_values(tm)
+            lights.append(la)
+        skel = _body_dict(getattr(main, "skel", None)).get(_CHUNK_SKEL)
+        for inst in getattr(main, "lightInsts", None) or []:
+            if not 0 <= inst.modelIndex < len(user_models):
+                log.warning("Invalid light model index %s in %s", inst.modelIndex, source_path)
+                continue
+            model = _body_dict(user_models[inst.modelIndex]).get(0x090F9000)
+            la = light_from_user_model(model, source_path=source_path)
+            if la is None:
+                continue
+            transform = _user_light_transform(skel, inst.socketIndex, source_path)
+            if transform is None:
+                continue
+            la.transform = transform
+            lights.append(la)
+        for index, la in enumerate(lights):
             if la.light_type:
                 # Several embedded meshes can share one prefab source path.
-                key = repr((source_path, index, la.transform, la.light_type,
-                            la.color, la.intensity, la.distance))
+                identity = ((la.metadata.get("source_path"), la.light_path) if la.light_path
+                            else (source_path, index, la.transform))
+                key = repr((identity, la.light_type, la.color, la.intensity, la.distance,
+                            la.spot_inner_angle, la.spot_outer_angle, la.night_only,
+                            la.emitting_radius, la.use_shadow, la.metadata))
                 light_key = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
-                la.name = f"{_file_stem(source_path)}_{light_key}_{la.name or 'Light'}{index}"
-            lights.append(la)
+                la.name = f"Light_{light_key}_{_file_stem(la.light_path or source_path)}"
 
     mesh = Mesh(
         source_path=source_path or None,

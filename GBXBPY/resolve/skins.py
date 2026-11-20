@@ -27,6 +27,7 @@ import io
 import logging
 import os
 import re
+import sys
 import zipfile
 from typing import Optional, Sequence
 
@@ -104,6 +105,11 @@ def default_cache_dir() -> str:
 
 def default_packs_dirs() -> list[str]:
     """Known install locations of the game's ``Packs`` folder that exist."""
+    if sys.platform.startswith("linux"):
+        from ..linux_paths import discover, unique
+
+        game = unique(discover().games, "Trackmania")
+        return [os.path.join(game, "Packs")] if game else []
     candidates = [
         r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Trackmania\Packs",
         r"C:\Program Files\Ubisoft\Ubisoft Game Launcher\games\Trackmania\Packs",
@@ -115,6 +121,11 @@ def default_packs_dirs() -> list[str]:
 
 def default_user_dirs() -> list[str]:
     """User folders that contain a ``Skins`` directory (custom skins)."""
+    if sys.platform.startswith("linux"):
+        from ..linux_paths import discover, unique
+
+        path = unique(discover().users, "Trackmania user")
+        return [path] if path else []
     path = os.path.join(os.path.expanduser("~"), "Documents", "Trackmania")
     return [path] if os.path.isdir(path) else []
 
@@ -126,12 +137,12 @@ class SkinLibrary:
         self,
         packs_dirs: Sequence[str] = (),
         user_dirs: Sequence[str] = (),
-        cache_dir: str = "",
+        cache_dir: Optional[str] = None,
         locators=None,
     ) -> None:
         self.packs_dirs = [d for d in packs_dirs if d and os.path.isdir(d)]
         self.user_dirs = [d for d in user_dirs if d and os.path.isdir(d)]
-        self.cache_dir = cache_dir or default_cache_dir()
+        self.cache_dir = default_cache_dir() if cache_dir is None else cache_dir
         # Optional GBXBPY.resolve.locators.LocatorCache: downloads files that
         # are only available through their map locator URL.
         self.locators = locators
@@ -191,6 +202,8 @@ class SkinLibrary:
         """Write ``member`` to the cache and return its absolute path."""
         if not member and data is None:
             return container  # loose file on disk
+        if not self.cache_dir:
+            raise OSError("Skin Cache Directory is not configured in addon preferences")
         digest = hashlib.sha1(f"{container}|{member}".casefold().encode("utf-8")).hexdigest()[:16]
         target = os.path.join(self.cache_dir, digest, os.path.basename(member.replace("\\", "/")))
         if data is None:

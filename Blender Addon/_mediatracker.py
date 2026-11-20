@@ -268,11 +268,14 @@ def _map_camera_height(scene, root):
     from GBXBPY.resolve import Resolver
     from . import _get_gamedata_dir
 
+    gamedata = _get_gamedata_dir(bpy.context)
+    if not gamedata:
+        raise ValueError("Set the GameData folder in addon preferences to recover camera height")
     try:
         asset = GBXBPY.load(bpy.path.abspath(source))
         if not isinstance(asset, Map):
             raise ValueError("Camera height source is not a map")
-        height = resolve_absolute_height(asset, Resolver(_get_gamedata_dir(bpy.context)))
+        height = resolve_absolute_height(asset, Resolver(gamedata))
     except (GbxbpyError, OSError) as exc:
         raise ValueError(f"Cannot recover camera height; reopen the source map or reimport: {exc}") from exc
     map_root["tm_mediatracker_height_m"] = height
@@ -613,6 +616,9 @@ class TMBRIDGE_OT_ImportMediaClip(bpy.types.Operator, ImportHelper):
         return ImportHelper.invoke(self, context, event)
 
     def execute(self, context):
+        from . import _show_console_on_import
+
+        _show_console_on_import(context)
         try:
             root = context.scene.objects.get(self.target) if self.target else _selected_tracker(context)
             from ._map_panel import map_root

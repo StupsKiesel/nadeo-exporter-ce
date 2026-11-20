@@ -30,7 +30,7 @@ class ImportOptions:
     import_all_lods: bool = False
     import_baked: bool = True
     apply_deco_height: bool = True
-    # The map stores no population; occupied seats/variants are pseudo-random.
+    # Rebuild runtime crowds at authored spectator slots.
     import_spectators: bool = False
     spectator_occupancy: float = 0.1
     # Vista VegetTreeModels referenced directly by prefabs (JungleForest
@@ -63,6 +63,7 @@ class ImportOptions:
     # locator URLs (used when the caller passes no SkinLibrary of its own).
     download_locators: bool = True
     club_textures: int = 0
+    import_skins: bool = True
 
     def __post_init__(self) -> None:
         if type(self.club_textures) is not int or self.club_textures < 0:

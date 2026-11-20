@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TypeVar
 
 from ..model.block import Block
 from ..model.map import Map, MapBlock
@@ -38,6 +39,7 @@ _SIDE_VEC = {"North": (0, 1), "East": (-1, 0), "South": (0, -1), "West": (1, 0)}
 _DIR_INDEX = {"North": 0, "East": 1, "South": 2, "West": 3}
 
 Cell = tuple[int, int, int]
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,24 @@ def _across(cell: Cell, direction: str) -> Cell | None:
     if vec is None:
         return None
     return (cell[0] + vec[0], cell[1], cell[2] + vec[1])
+
+
+def baked_owner(cell: Cell, direction: str, owners: Mapping[Cell, T]) -> T | None:
+    """The authored block a baked clip at ``cell`` finishes, using rule 3.
+
+    ``owners`` maps the grid cells of authored blocks to their owner. A clip
+    faces the block across its side; ground clips sit one level below it.
+    """
+    across = _across(cell, direction)
+    for probe in (across, cell):
+        if probe is not None and probe in owners:
+            return owners[probe]
+    for x, y, z in (base for base in (across, cell) if base is not None):
+        for dy in range(1, 32):
+            found = owners.get((x, y + dy, z))
+            if found is not None:
+                return found
+    return None
 
 
 def baked_modifiers(
@@ -192,4 +212,4 @@ def baked_modifiers(
     return result
 
 
-__all__ = ["baked_modifiers", "is_inheritable_modifier", "unit_cells"]
+__all__ = ["baked_modifiers", "baked_owner", "is_inheritable_modifier", "unit_cells"]

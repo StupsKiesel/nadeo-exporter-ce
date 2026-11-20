@@ -137,15 +137,24 @@ class LightAttachment:
     quaternion requires ``mathutils`` (which is only available inside
     Blender). The addon performs the conversion when materializing the
     light.
+
+    ``metadata`` contains only serializable settings and file-local reference
+    identities, never raw parser nodes. Unsupported effects remain metadata.
     """
 
     name: str = ""
     light_path: str = ""              # GameData-relative .Light.Gbx, if any
     transform: List[float] = field(default_factory=list)
-    light_type: str = ""              # Embedded CGx light, otherwise a file reference
+    light_type: str = ""              # Decoded point/spot type; empty when unresolved
     color: Tuple[float, float, float] = (1.0, 1.0, 1.0)
     intensity: Optional[float] = None
     distance: Optional[float] = None
+    spot_inner_angle: Optional[float] = None  # Degrees, as stored by CPlugLightUserModel
+    spot_outer_angle: Optional[float] = None
+    night_only: Optional[bool] = None
+    emitting_radius: Optional[float] = None
+    use_shadow: Optional[bool] = None
+    metadata: Dict[str, str | int | float | bool | Tuple[float, float, float]] = field(default_factory=dict)
 
 
 @dataclass

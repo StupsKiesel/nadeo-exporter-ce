@@ -77,7 +77,8 @@ def update(fraction: float, message: str | None = None) -> None:
     _redraw()
 
 
-def begin(title: str, *, modal: bool = False, cancel_operator: str = "", source: str = "") -> bool:
+def begin(title: str, *, modal: bool = False, cancel_operator: str = "", source: str = "",
+          initial_message: str = "") -> bool:
     """Start showing the bar; returns True when this call owns it.
 
     ``modal=True`` is for imports that return to Blender's event loop between
@@ -85,6 +86,7 @@ def begin(title: str, *, modal: bool = False, cancel_operator: str = "", source:
     redraw instead of forcing a synchronous window swap. ``cancel_operator``
     (an operator idname) adds an X button after the bar. The outermost call
     also opens the per-import log file named after ``source`` (or ``title``).
+    ``initial_message`` is displayed on the first redraw.
     """
     global _depth, _modal
     outer = _depth == 0
@@ -92,7 +94,7 @@ def begin(title: str, *, modal: bool = False, cancel_operator: str = "", source:
     if outer:
         _log_owner[0] = _file_logging.begin(source or title)
         _modal = modal
-        _state.update(title=title, message="", fraction=0.0, cancel=cancel_operator)
+        _state.update(title=title, message=initial_message, fraction=0.0, cancel=cancel_operator)
         _show_tool_headers()
         wm = getattr(bpy.context, "window_manager", None)
         if wm is not None:
@@ -118,21 +120,25 @@ def end(owner: bool) -> None:
 
 
 @contextlib.contextmanager
-def task(title: str, source: str = ""):
+def task(title: str, source: str = "", *, initial_message: str = ""):
     """Show the progress overlay for the duration of the ``with`` block."""
-    owner = begin(title, source=source)
+    owner = begin(title, source=source, initial_message=initial_message)
     try:
         yield Progress()
     finally:
         end(owner)
 
 
-def tracked(title: str):
+def tracked(title: str, *, importing: bool = False):
     """Decorator running an operator ``execute`` inside :func:`task`."""
 
     def decorate(execute):
         def wrapper(self, context):
-            with task(title, source=getattr(self, "filepath", "") or ""):
+            if importing:
+                from . import _show_console_on_import
+
+                _show_console_on_import(context)
+            with task(title, source=getattr(self, "filepath", "") or "", initial_message="Reading GBX"):
                 update(0.02, "Reading GBX")
                 result = execute(self, context)
                 if "FINISHED" in result:

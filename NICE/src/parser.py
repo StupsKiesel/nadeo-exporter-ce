@@ -5,7 +5,7 @@ from pathlib import Path
 from functools import partial
 from collections import OrderedDict
 
-from construct import Container
+from construct import ConstructError, Container
 
 from .gbx_structs import GbxStruct, GbxStructWithoutBodyParsed
 
@@ -44,11 +44,17 @@ def _external_cache(recursive):
 # Called with the absolute path before parse_file reads a file; lets the
 # caller fetch missing files on demand (GBXBPY.library).
 _file_hook = None
+_parse_failure_hook = None
 
 
 def set_file_hook(hook):
     global _file_hook
     _file_hook = hook
+
+
+def set_parse_failure_hook(hook):
+    global _parse_failure_hook
+    _parse_failure_hook = hook
 
 
 def parse_bytes(raw_bytes, filepath="", log=False, recursive=False):
@@ -90,8 +96,19 @@ def parse_file(file_path, recursive=True, log=False):
     if log:
         logging.getLogger("tm2020.nice.parser").debug("%s", file_path)
 
-    with open(file_path, "rb") as f:
-        return parse_bytes(f.read(), file_path, log, recursive)
+    def read():
+        with open(file_path, "rb") as f:
+            return parse_bytes(f.read(), file_path, log, recursive)
+
+    try:
+        data = read()
+    except (ConstructError, OSError):
+        if _parse_failure_hook is None or not _parse_failure_hook(file_path):
+            raise
+        return read()
+    if data._errors and _parse_failure_hook is not None and _parse_failure_hook(file_path):
+        return read()
+    return data
 
 
 def _load_external_file(files_cache, log, root_path, recursive, relative_path):

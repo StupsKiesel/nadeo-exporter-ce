@@ -105,7 +105,10 @@ def _stock_link(spec, binding, resolver, source_path, catalog):
         root = getattr(resolver, "gamedata_dir", "")
         if not root:
             return None, "GameData root unavailable for stock-link verification"
-        effective = os.path.relpath(effective, root)
+        try:
+            effective = os.path.relpath(effective, root)
+        except ValueError:
+            return None, f"Material is outside the configured GameData root: {effective}"
     hit = _stock_paths(catalog).get(_key(effective))
     if hit is None:
         return None, f"No verified stock link for {effective or spec.name_hint}"

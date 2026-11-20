@@ -133,9 +133,13 @@ class TMBRIDGE_OT_ApplyMood(bpy.types.Operator):
         settings = scene.tm_bridge_mood
         mood, day_time = _selected(settings, root)
         gamedata = _get_gamedata_dir(context)
+        if not gamedata:
+            self.report({"ERROR"}, "Set the GameData folder in addon preferences")
+            return {"CANCELLED"}
         queue = _openplanet_bridge.queue()
         issues: list[str] = []
-        provider = LibraryProvider(gamedata, queue, fetch=queue is not None and queue.plugin_connected(),
+        provider = LibraryProvider(gamedata, queue, fetch=bool(_openplanet_bridge.extract_dir()) and
+                                   queue is not None and queue.plugin_connected(),
                                    extract_dir=_openplanet_bridge.extract_dir())
         with library.active(provider):
             provider.prepare()

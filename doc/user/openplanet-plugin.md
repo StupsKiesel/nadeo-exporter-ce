@@ -35,8 +35,11 @@ already.
 
 1. Open the addon preferences (*Edit > Preferences > Add-ons >
    Nadeo Exporter Community Edition*).
-2. Under **Openplanet**, click **Install Plugin**. This copies the bundled
-   plugin into your `OpenplanetNext\Plugins` folder.
+2. Select the game and its matching Openplanet data folder. Under
+   **Openplanet**, click **Install Plugin** to copy that game's extractor into
+   the folder's `Plugins` subfolder. Separate plugins are bundled for
+   Trackmania 2020 and ManiaPlanet; ManiaPlanet extraction is unverified.
+   Turbo and Forever plugins are not available yet.
 3. If Trackmania is already running, reload plugins in Openplanet
    (*Developer > Reload plugin*) or restart the game.
 
@@ -113,7 +116,7 @@ it in Openplanet.
 | Symptom | Fix |
 |---|---|
 | *Waiting for Trackmania* never becomes *Connected* | Is the game running with Openplanet? Is signature mode set to *Developer*? Was the plugin reloaded after installing? |
-| Plugin not listed in Openplanet | Click **Install Plugin** again and check `OpenplanetNext\Plugins\BlenderBridgeExtractor` exists; then reload plugins. |
-| Imports report missing or incomplete files although connected | Check the plugin summary and `Openplanet.log`. Re-importing retries normal extraction; for incomplete or unreadable `VegetTreeModel` or `Item.Gbx` files, enable **Experimental Hooked Extraction** in the map import options. Hook extraction is experimental and may crash Trackmania. |
+| Plugin not listed in Openplanet | Click **Install Plugin** again and check `<Openplanet folder>\Plugins\BlenderBridgeExtractor` exists; then reload plugins. |
+| Imports report missing or incomplete files although connected | Check the plugin summary and `Openplanet.log`. Enable **Fetch Missing Files**: failed GBX files get one automatic hook retry per import, except blacklisted crashers such as `PlugResource.Gbx`. Hook extraction can still crash Trackmania. |
 | `Script execution timeout exceeded` in `Openplanet.log` | One file took longer to extract than Openplanet's script timeout (1 second by default), which happens on slow disks or under Proton/Wine. Since plugin 2.2.1 the plugin keeps going with the next file, and Blender retries the file if it is missing. Older plugins stop until reloaded: click **Update Plugin** in Blender and reload it. |
-| You cannot run the game and Blender together | Use a pre-extracted GameData folder as **Game Library** instead — see [preferences](preferences.md). |
+| You cannot run the game and Blender together | Use a pre-extracted folder with **Custom GameData Libraries** — see [preferences](preferences.md). |

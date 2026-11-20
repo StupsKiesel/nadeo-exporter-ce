@@ -72,11 +72,21 @@ class TMBRIDGE_PT_DevQuickActions(_DevPanel, bpy.types.Panel):
             row.operator(OP + "clean_blend_file", text="Clear Blend", icon="TRASH")
             if hasattr(bpy.ops.wm, "console_toggle"):
                 row.operator("wm.console_toggle", text="Console", icon="CONSOLE")
-            from . import _openplanet_bridge
 
-            box = col.box()
-            box.label(text="Openplanet Developer Tools", icon="LINKED")
-            _openplanet_bridge.draw_tools(box, addon.preferences)
+
+class TMBRIDGE_PT_DevWebServer(_DevPanel, bpy.types.Panel):
+    bl_idname = "TMBRIDGE_PT_dev_web_server"
+    bl_label = "Web Server"
+    bl_order = 41
+
+    def draw(self, _context):
+        from . import _openplanet_bridge
+
+        addon = _addon()
+        if addon is None:
+            self.layout.label(text="Addon preferences not available", icon="ERROR")
+            return
+        _openplanet_bridge.draw_tools(self.layout.column(), addon.preferences)
 
 
 class TMBRIDGE_PT_DevMediaTracker(_DevPanel, bpy.types.Panel):
@@ -184,6 +194,7 @@ def panels(gbxmat_panel) -> tuple:
         TMBRIDGE_PT_DevPreferences,
         TMBRIDGE_PT_DevUpgrade,
         TMBRIDGE_PT_DevQuickActions,
+        TMBRIDGE_PT_DevWebServer,
         TMBRIDGE_PT_DevMediaTracker,
         TMBRIDGE_PT_DevStats,
         TMBRIDGE_PT_DevImport,

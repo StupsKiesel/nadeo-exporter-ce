@@ -97,9 +97,16 @@ def build_replay(replay, context, start_frame=1, *, apply_deco_height=True,
             from GBXBPY.replay_vehicle import load_replay_vehicle
             import zipfile
 
-            resolver = Resolver(_get_gamedata_dir(context))
-            skins = _make_skin_library(context, download=download_skins)
-            skins.user_dirs.append(resolver.gamedata_dir)
+            gamedata = _get_gamedata_dir(context)
+            if not gamedata:
+                message = "GameData is not configured; replay cars use placeholders"
+                log.warning("%s", message)
+                visual_diagnostics.append(message)
+                import_car_model = False
+            else:
+                resolver = Resolver(gamedata)
+                skins = _make_skin_library(context, download=download_skins)
+                skins.user_dirs.append(resolver.gamedata_dir)
         for index, ghost in enumerate(replay.ghosts):
             if not ghost.samples:
                 continue
@@ -288,7 +295,7 @@ class TMBRIDGE_OT_ImportReplay(bpy.types.Operator, ImportHelper):
         name="Animate Wheels and Suspension", default=True,
         description="Use authored wheel, suspension and spoiler dynamics; steering and linkage alignment remain unsupported. Spoiler is reconstructed at scene FPS")
 
-    @_progress.tracked("Importing Replay")
+    @_progress.tracked("Importing Replay", importing=True)
     def execute(self, context):
         import GBXBPY
         from GBXBPY.model.replay import Replay

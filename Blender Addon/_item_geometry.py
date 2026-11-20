@@ -59,7 +59,7 @@ def configure_part(obj, part):
         for name in ("BaseMaterial", "LightMap"):
             if not any(uv.name.casefold() == name.casefold() for uv in obj.data.uv_layers):
                 obj.data.uv_layers.new(name=name)
-    if part.mesh is not None and part.layer_index >= 0:
+    if obj.type == "MESH" and part.mesh is not None and part.layer_index >= 0:
         obj["tm_material_indices"] = json.dumps(part.material_indices)
         for name, values in (("tm_face_group", part.face_groups), ("tm_source_face", part.face_sources)):
             if len(values) == len(obj.data.polygons):
@@ -106,6 +106,13 @@ def build_part(part, lod_level=1, *, resolver=None, source_path="", progress=Non
     if part.mesh is None:
         obj = bpy.data.objects.new(part.name, None)
         obj.empty_display_type = "CUBE"
+    elif part.role == "light":
+        from . import _build_light_templates
+        templates = _build_light_templates(part.mesh)
+        if len(templates) != 1:
+            raise ValueError(f"{part.name}: light part must contain exactly one supported light")
+        data, _matrix = templates[0]
+        obj = bpy.data.objects.new(part.name, data)
     elif part.role in ("collision", "trigger"):
         mesh = part.mesh
         lod = mesh.lod(lod_level) or (mesh.lods[0] if mesh.lods else None)
@@ -171,6 +178,16 @@ def configure_item_collection(collection, item, source_path):
         log.warning("%s has no decoded spawn transform; no synthetic socket created", item.name)
 
 
+def _link_part(obj, part, collection):
+    collection.objects.link(obj)
+    if part.role == "geometry" and part.mesh is not None and part.mesh.lights:
+        from . import _attach_light_instances, _build_light_templates
+        _attach_light_instances(obj, _build_light_templates(part.mesh), collection)
+        for child in obj.children:
+            child.hide_render = obj.hide_render
+            child.hide_viewport = obj.hide_viewport
+
+
 def build_item_collection(item, context, lod_level, *, resolver=None, source_path="", progress=None,
                           target_collection=None):
     from . import _build_prefab_object_impl
@@ -179,6 +196,14 @@ def build_item_collection(item, context, lod_level, *, resolver=None, source_pat
         collection = bpy.data.collections.new(item.name or "Item")
         context.collection.children.link(collection)
     configure_item_collection(collection, item, source_path)
+    custom_count = sum(len(parts) for parts in item.custom_block.variants.values()) if item.custom_block else 0
+    has_external = not item.parts and item.embedded_prefab is None and bool(item.entity_variants)
+    total = max(1, custom_count + len(item.parts) + int(item.embedded_prefab is not None) + int(has_external))
+    done = 0
+
+    def section():
+        return progress.sub(done / total, (done + 1) / total) if progress is not None else None
+
     if item.custom_block is not None:
         collection["tm_custom_block_archetype"] = item.custom_block.archetype_id
         collection["tm_custom_block_collection"] = item.custom_block.archetype_collection
@@ -187,17 +212,37 @@ def build_item_collection(item, context, lod_level, *, resolver=None, source_pat
             variant["tm_custom_block_variant_key"] = key
             collection.children.link(variant)
             for part in parts:
-                variant.objects.link(build_part(part, lod_level, resolver=resolver, source_path=source_path))
-    for i, part in enumerate(item.parts):
-        reporter = progress.sub(i / max(1, len(item.parts)), (i + 1) / max(1, len(item.parts))) if progress else None
+                reporter = section()
+                if reporter is not None:
+                    reporter(0, f"Building item parts {done + 1}/{total}")
+                obj = build_part(part, lod_level, resolver=resolver, source_path=source_path, progress=reporter)
+                _link_part(obj, part, variant)
+                if reporter is not None:
+                    reporter(1, f"Built item parts {done + 1}/{total}")
+                done += 1
+    for part in item.parts:
+        reporter = section()
+        if reporter is not None:
+            reporter(0, f"Building item parts {done + 1}/{total}")
         obj = build_part(part, lod_level, resolver=resolver, source_path=source_path, progress=reporter)
-        collection.objects.link(obj)
+        _link_part(obj, part, collection)
+        if reporter is not None:
+            reporter(1, f"Built item parts {done + 1}/{total}")
+        done += 1
     if item.embedded_prefab is not None:
+        reporter = section()
+        if reporter is not None:
+            reporter(0, "Building item prefab")
         _build_prefab_object_impl(
             item.embedded_prefab, context, lod_level, target_collection=collection,
-            resolver=resolver, source_path=source_path, resolve_external_entities=True, progress=progress,
+            resolver=resolver, source_path=source_path, resolve_external_entities=True, progress=reporter,
         )
+        if reporter is not None:
+            reporter(1, "Item prefab built")
     elif not item.parts and item.entity_variants:
+        reporter = section()
+        if reporter is not None:
+            reporter(0, "Resolving item model")
         if resolver is None:
             raise ValueError("This item needs GameData to resolve its entity model")
         import GBXBPY
@@ -207,25 +252,30 @@ def build_item_collection(item, context, lod_level, *, resolver=None, source_pat
         if path is None:
             raise ValueError(f"Item entity model not found: {reference}")
         payload = GBXBPY.load(path, resolver=resolver)
+        if reporter is not None:
+            reporter(0.1, "Building item model")
+        model_progress = reporter.sub(0.1, 1.0) if reporter is not None else None
         if isinstance(payload, Mesh):
-            obj = build_part(MeshPart(name=payload.name or "Geometry", mesh=payload,
-                                      collidable=payload.collidable),
-                             lod_level, resolver=resolver, source_path=path)
-            collection.objects.link(obj)
+            part = MeshPart(name=payload.name or "Geometry", mesh=payload, collidable=payload.collidable)
+            obj = build_part(part, lod_level, resolver=resolver, source_path=path, progress=model_progress)
+            _link_part(obj, part, collection)
             attach_collision_parts(obj, payload, collection, lod_level=lod_level,
                                    resolver=resolver, source_path=path)
         elif isinstance(payload, Prefab):
             _build_prefab_object_impl(payload, context, lod_level, target_collection=collection,
-                                      resolver=resolver, source_path=path, resolve_external_entities=True)
+                                      resolver=resolver, source_path=path, resolve_external_entities=True,
+                                      progress=model_progress)
         else:
             from GBXBPY.model import VegetationModel
             if isinstance(payload, VegetationModel) and payload.variants and payload.variants[0].mesh is not None:
                 mesh = payload.variants[0].mesh
-                obj = build_part(MeshPart(name=mesh.name or "Vegetation", mesh=mesh),
-                                 lod_level, resolver=resolver, source_path=path)
-                collection.objects.link(obj)
+                part = MeshPart(name=mesh.name or "Vegetation", mesh=mesh)
+                obj = build_part(part, lod_level, resolver=resolver, source_path=path, progress=model_progress)
+                _link_part(obj, part, collection)
             else:
                 raise ValueError(f"Unsupported item entity model: {type(payload).__name__}")
+        if reporter is not None:
+            reporter(1, "Item model built")
     if not item.parts and item.embedded_prefab is None and not item.entity_variants and item.custom_block is None:
         raise ValueError("Item has no supported geometry or entity model")
     return collection

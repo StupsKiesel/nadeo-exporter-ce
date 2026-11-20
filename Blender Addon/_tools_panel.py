@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import urllib.error
@@ -9,7 +10,7 @@ import urllib.parse
 import urllib.request
 
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 from . import ADDON_SHORT_NAME
 
 log = logging.getLogger("trackmania_blender_bridge.tools")
@@ -21,6 +22,122 @@ _ADDON_ZIP = re.compile(r"nadeo_exporter_ce_\d+\.\d+\.\d+\.zip")
 
 def _is_instance(obj):
     return obj.instance_type == "COLLECTION" and obj.instance_collection is not None
+
+
+_CLIP_FILE = re.compile(r"\.ED(?:Horizontal|Vertical)?Clip\.Gbx$", re.IGNORECASE)
+# Grid (square, height) of the main map sections Blocks and BakedBlocks.
+_GRID = (32.0, 8.0)
+# Unresolved baked clips join the nearest authored block within this distance.
+_NEAREST_CLIP_OWNER_M = 64.0
+
+
+def _section(obj):
+    return next((owner["tm_section"] for owner in obj.users_collection if "tm_section" in owner), None)
+
+
+def _sections():
+    """``{object: section}`` for all section members.
+
+    ``Object.users_collection`` scans every collection in the file, which takes
+    seconds when called for each placement of a large map.
+    """
+    sections = {}
+    for collection in bpy.data.collections:
+        section = collection.get("tm_section")
+        if section is not None:
+            for obj in collection.objects:
+                sections.setdefault(obj, section)
+    return sections
+
+
+def _is_baked_clip(obj):
+    if "tm_block_is_clip" in obj:
+        return bool(obj["tm_block_is_clip"])
+    return bool(_CLIP_FILE.search(str(obj.get("tm_source_path", ""))))
+
+
+def _grid_cells(obj):
+    """Grid cells covered by a grid placement."""
+    raw = obj.get("tm_block_cells")
+    if raw is not None:
+        values = [int(value) for value in raw]
+        return [tuple(values[i:i + 3]) for i in range(0, len(values) - 2, 3)]
+    coord = tuple(int(value) for value in obj["tm_block_coord"])
+    if not _is_instance(obj):
+        return [coord]
+    # Scenes imported before the footprint was stored: use the geometry bounds.
+    try:
+        corners = [world @ Vector(corner) for source, world in _contents(obj.instance_collection, obj.matrix_world)
+                   if source.type == "MESH" for corner in source.bound_box]
+    except ValueError:
+        corners = []
+    if not corners:
+        return [coord]
+    square, height, inset = *_GRID, 0.5
+    xs = range(math.floor((min(c.x for c in corners) + inset) / square),
+               math.floor((max(c.x for c in corners) - inset) / square) + 1)
+    ys = range(math.floor((min(c.z for c in corners) + inset) / height),
+               math.floor((max(c.z for c in corners) - inset) / height) + 1)
+    zs = range(math.floor(-(max(c.y for c in corners) - inset) / square),
+               math.floor(-(min(c.y for c in corners) + inset) / square) + 1)
+    return [(x, y, z) for x in xs for y in ys for z in zs] or [coord]
+
+
+def _nearest_block(clip, blocks):
+    location = clip.matrix_world.translation
+    square, height = _GRID
+    best, distance = None, _NEAREST_CLIP_OWNER_M
+    for block, cells in blocks:
+        for x, y, z in cells:
+            center = Vector(((x + 0.5) * square, -(z + 0.5) * square, (y + 0.5) * height))
+            if (center - location).length < distance:
+                best, distance = block, (center - location).length
+    return best
+
+
+def _baked_clip_owners(context, map_id, sections):
+    """``{baked clip: owning authored block or None}`` for the displayed clips of one map."""
+    from GBXBPY.map_import_v4.inherited_modifiers import baked_owner
+
+    blocks, clips = [], []
+    for obj in context.scene.objects:
+        if (obj.parent is not None or obj.get("tm_map_root") != map_id
+                or "tm_block_coord" not in obj or obj.get("tm_block_is_free")):
+            continue
+        section = sections.get(obj)
+        if section == "Blocks" and not _is_baked_clip(obj):
+            blocks.append((obj, _grid_cells(obj)))
+        elif section == "BakedBlocks" and _is_baked_clip(obj) and obj.visible_get(view_layer=context.view_layer):
+            clips.append(obj)
+    owners = {}
+    for block, cells in blocks:
+        for cell in cells:
+            owners.setdefault(cell, block)
+    owner_of = {}
+    for clip in clips:
+        cell = tuple(int(value) for value in clip["tm_block_coord"])
+        owner_of[clip] = (baked_owner(cell, str(clip.get("tm_block_dir", "North")), owners)
+                          or _nearest_block(clip, blocks))
+    return owner_of
+
+
+def _block_group(context, target, cache):
+    """``(owner, clips)``: the authored block a placement belongs to and its displayed baked clips."""
+    map_id = target.get("tm_map_root")
+    if map_id is None or "tm_block_coord" not in target or target.get("tm_block_is_free"):
+        return target, []
+    if None not in cache:
+        cache[None] = _sections()
+    section = cache[None].get(target)
+    if section not in {"Blocks", "BakedBlocks"} or (section == "BakedBlocks" and not _is_baked_clip(target)):
+        return target, []
+    if map_id not in cache:
+        cache[map_id] = _baked_clip_owners(context, map_id, cache[None])
+    owner_of = cache[map_id]
+    owner = owner_of.get(target, target)
+    if owner is None:
+        return target, []
+    return owner, [clip for clip, clip_owner in owner_of.items() if clip_owner == owner]
 
 
 def _contents(collection, matrix, ancestors=()):
@@ -36,7 +153,7 @@ def _contents(collection, matrix, ancestors=()):
 
 
 class TMBRIDGE_OT_MakeBlocksEditable(bpy.types.Operator):
-    """Replace selected collection instances with independent editable mesh copies"""
+    """Replace selected placements and all clips of their block with editable mesh copies in one collection"""
 
     bl_idname = "trackmania_blender_bridge.make_blocks_editable"
     bl_label = "Make Blocks Editable"
@@ -51,31 +168,72 @@ class TMBRIDGE_OT_MakeBlocksEditable(bpy.types.Operator):
             and any(_is_instance(obj) and obj.is_editable for obj in context.selected_objects)
         )
 
+    @staticmethod
+    def _groups(context):
+        """``[(owner, targets)]``: each selected block with its attached and baked clips."""
+        groups = []
+        claimed = set()
+        cache = {}
+        for obj in context.selected_objects:
+            if not (_is_instance(obj) and obj.is_editable):
+                continue
+            # A selected attached clip belongs to its block.
+            while "tm_clip_source" in obj and obj.parent is not None and _is_instance(obj.parent):
+                obj = obj.parent
+            owner, baked = _block_group(context, obj, cache)
+            if owner in claimed:
+                continue
+            claimed.add(owner)
+            targets = []
+            for member in (owner, *baked):
+                for candidate in (member, *member.children_recursive):
+                    if (_is_instance(candidate) and candidate.is_editable
+                            and (candidate == owner or candidate not in claimed)):
+                        claimed.add(candidate)
+                        targets.append(candidate)
+            if targets:
+                groups.append((owner, targets))
+        return groups
+
     def execute(self, context):
-        selected = [obj for obj in context.selected_objects if _is_instance(obj) and obj.is_editable]
-        # Attached clip instances belong to the selected block, even when not selected.
-        targets = set(selected)
-        for obj in selected:
-            targets.update(child for child in obj.children_recursive if _is_instance(child))
+        from . import _progress
+
+        with _progress.task("Make Editable") as progress:
+            return self._make_editable(context, progress)
+
+    def _make_editable(self, context, progress):
+        progress(0.0, "Finding block clips")
+        groups = self._groups(context)
+        total = sum(len(targets) for _owner, targets in groups) or 1
+        done = 0
         staged = []
         created = []
         try:
-            for target in targets:
-                parts = list(_contents(target.instance_collection, target.matrix_world))
-                if not any(source.type == "MESH" for source, _ in parts):
-                    self.report({"WARNING"}, f"{target.name}: no mesh geometry to convert")
-                    continue
-                copies = []
-                for source, world in parts:
-                    obj = source.copy()
-                    created.append(obj)
-                    if source.data is not None:
-                        obj.data = source.data.copy()
-                    obj.parent = None
-                    obj.matrix_world = world
-                    obj.name = f"{target.name} {source.name}"
-                    copies.append(obj)
-                staged.append((target, copies))
+            for owner, targets in groups:
+                converted = []
+                for target in targets:
+                    done += 1
+                    progress(0.1 + 0.7 * done / total, f"Copying {target.name}")
+                    parts = list(_contents(target.instance_collection, target.matrix_world))
+                    if not any(source.type == "MESH" for source, _ in parts):
+                        if target == owner:
+                            self.report({"WARNING"}, f"{target.name}: no mesh geometry to convert")
+                        else:
+                            log.debug("%s: clip without mesh geometry stays an instance", target.name)
+                        continue
+                    copies = []
+                    for source, world in parts:
+                        obj = source.copy()
+                        created.append(obj)
+                        if source.data is not None:
+                            obj.data = source.data.copy()
+                        obj.parent = None
+                        obj.matrix_world = world
+                        obj.name = f"{target.name} {source.name}"
+                        copies.append(obj)
+                    converted.append((target, copies))
+                if converted:
+                    staged.append((owner, converted))
         except Exception as exc:
             log.exception("Could not make selected blocks editable")
             for obj in created:
@@ -89,43 +247,63 @@ class TMBRIDGE_OT_MakeBlocksEditable(bpy.types.Operator):
         if not staged:
             self.report({"WARNING"}, "No selected blocks contain mesh geometry")
             return {"CANCELLED"}
+        progress(0.8, "Building collections")
         active = context.view_layer.objects.active
         replacement_active = None
-        for target, copies in staged:
-            for obj in copies:
-                # Preserve the selected placement's metadata after realizing its geometry.
-                for key in target.keys():
-                    if key.startswith("tm_"):
-                        obj[key] = target[key]
-                if target.instance_collection is not None:
-                    placement = target.instance_collection.get("tm_item_placement")
-                    if "tm_item_placement" not in obj and placement is not None:
-                        obj["tm_item_placement"] = placement
-                    source = target.get("tm_source_path") or target.instance_collection.get("tm_source_path")
-                    if source:
-                        obj["tm_source_path"] = source
-                for collection in target.users_collection:
-                    collection.objects.link(obj)
-                obj.hide_viewport = target.hide_viewport or obj.hide_viewport
-                obj.hide_render = target.hide_render or obj.hide_render
-            if target == active:
-                replacement_active = next(obj for obj in copies if obj.type == "MESH")
+        for owner, converted in staged:
+            bundle = bpy.data.collections.new(f"{owner.name} (Editable)")
+            # The bundle carries the block's identity for the asset panels.
+            for key in owner.keys():
+                if key.startswith("tm_"):
+                    bundle[key] = owner[key]
+            if "tm_source_path" not in bundle and owner.instance_collection is not None:
+                source = owner.instance_collection.get("tm_source_path")
+                if source:
+                    bundle["tm_source_path"] = source
+            parent = owner.users_collection[0] if owner.users_collection else context.scene.collection
+            parent.children.link(bundle)
+            for target, copies in converted:
+                for obj in copies:
+                    # Preserve each placement's metadata after realizing its geometry.
+                    for key in target.keys():
+                        if key.startswith("tm_"):
+                            obj[key] = target[key]
+                    if target.instance_collection is not None:
+                        placement = target.instance_collection.get("tm_item_placement")
+                        if "tm_item_placement" not in obj and placement is not None:
+                            obj["tm_item_placement"] = placement
+                        source = target.get("tm_source_path") or target.instance_collection.get("tm_source_path")
+                        if source:
+                            obj["tm_source_path"] = source
+                    bundle.objects.link(obj)
+                    obj.hide_viewport = target.hide_viewport or obj.hide_viewport
+                    obj.hide_render = target.hide_render or obj.hide_render
+                if target == active:
+                    replacement_active = next(obj for obj in copies if obj.type == "MESH")
+        targets = [target for _owner, converted in staged for target, _copies in converted]
+        copies = [obj for _owner, converted in staged for _target, part in converted for obj in part]
         # Preserve other children (for example lights) when removing their parent.
-        for target, _copies in staged:
+        for target in targets:
             for child in list(target.children):
+                if child in targets:
+                    continue
+                parent = target.parent
+                while parent is not None and parent in targets:
+                    parent = parent.parent
                 world = child.matrix_world.copy()
-                child.parent = target.parent
+                child.parent = parent
                 child.matrix_world = world
+        progress(0.9, "Removing instances")
         for obj in context.selected_objects:
             obj.select_set(False)
-        for target, copies in staged:
-            bpy.data.objects.remove(target, do_unlink=True)
-            for obj in copies:
-                obj.select_set(True)
+        bpy.data.batch_remove(targets)
+        progress(1.0, "Complete")
+        for obj in copies:
+            obj.select_set(True)
         if replacement_active is None:
-            replacement_active = next(obj for _, copies in staged for obj in copies if obj.type == "MESH")
+            replacement_active = next(obj for obj in copies if obj.type == "MESH")
         context.view_layer.objects.active = replacement_active
-        self.report({"INFO"}, f"Made {len(staged)} block/clip instances editable")
+        self.report({"INFO"}, f"Made {len(targets)} block/clip instances editable in {len(staged)} collection(s)")
         return {"FINISHED"}
 
 
@@ -226,11 +404,11 @@ def _release_kind(release):
 
 # Result of the last update check, shared by the operators, the UI and the
 # background startup check.
-_update_state = {"update": None, "status": "", "checking": False}
+_update_state = {"update": None, "status": "", "level": "", "checking": False}
 
 
 def reset_update_state():
-    _update_state.update(update=None, status="")
+    _update_state.update(update=None, status="", level="")
 
 
 def _installed_version():
@@ -305,7 +483,7 @@ class TMBRIDGE_OT_CheckGitHubRelease(bpy.types.Operator):
             self.report({"WARNING"}, "GitHub repository is not configured.")
             return {"CANCELLED"}
         level, message, update = _check_releases(_include_prereleases(context))
-        _update_state.update(update=update, status=message)
+        _update_state.update(update=update, status=message, level=level)
         self.report({level}, message)
         return {"CANCELLED"} if level == "ERROR" or (level == "WARNING" and update is None) else {"FINISHED"}
 
@@ -418,7 +596,8 @@ def _startup_check():
             level, message, update = _check_releases(include)
             # Network failures at startup stay silent; the user can retry.
             if level != "ERROR":
-                _update_state.update(update=update, status=message if update else "")
+                _update_state.update(update=update, status=message if update else "",
+                                     level=level if update else "")
         finally:
             _update_state["checking"] = False
 
@@ -439,11 +618,13 @@ def unregister():
             bpy.app.timers.unregister(timer)
 
 
-def draw_github_actions(layout, *, header=False):
+def draw_github_actions(layout, *, header=False, prefs=None):
     row = layout.row(align=True)
     configured = _github_release_api_url() is not None
     row.enabled = configured and not _update_state["checking"]
     update = _update_state["update"] if configured else None
+    if prefs is not None:
+        row.prop(prefs, "include_prereleases", text="Pre-releases")
     if update and update["zip_url"]:
         row.alert = True
         text = "" if header else f"Install {update['tag']} ({_release_kind(update)})"
@@ -451,14 +632,25 @@ def draw_github_actions(layout, *, header=False):
     elif header:
         row.operator(OP + "check_github_release", text="", icon="FILE_REFRESH")
     else:
-        text = "Checking..." if _update_state["checking"] else "Check for Updates"
+        if _update_state["checking"]:
+            text = "Checking..."
+        elif update:
+            text = "No addon ZIP - Check again"
+        elif _update_state["level"] == "ERROR":
+            text = "Check failed - Retry"
+        elif _update_state["level"] == "WARNING":
+            text = "No releases - Check again"
+        elif _update_state["status"]:
+            text = "Up to date - Check again"
+        else:
+            text = "Check for Updates"
         row.operator(OP + "check_github_release", text=text, icon="FILE_REFRESH")
     if header:
         open_repo = row.operator("wm.url_open", text="", icon="URL")
     elif update:
         open_repo = row.operator("wm.url_open", text="Release Notes", icon="URL")
     else:
-        open_repo = row.operator("wm.url_open", text="Open GitHub Repository", icon="URL")
+        open_repo = row.operator("wm.url_open", text="", icon="URL")
     open_repo.url = update["notes_url"] if update else GITHUB_REPOSITORY_URL
     if not configured and not header:
         message = (
@@ -467,13 +659,6 @@ def draw_github_actions(layout, *, header=False):
             else "GitHub repository URL is invalid"
         )
         layout.label(text=message, icon="INFO")
-
-
-def draw_update_status(layout):
-    """Show the result of the last update check, if any."""
-    status = _update_state["status"]
-    if status:
-        layout.label(text=status, icon="IMPORT" if _update_state["update"] else "INFO")
 
 
 def draw_build_upgrade_button(layout):

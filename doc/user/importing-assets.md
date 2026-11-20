@@ -7,7 +7,7 @@ under *File > Import > Nadeo Exporter CE*:
 
 | Menu entry | File type | Use it for |
 |---|---|---|
-| **Item (.Item.Gbx)** | `.Item.Gbx` | Custom or stock items, e.g. from [item.exchange](https://item.exchange/). |
+| **Item / Crystal (.Gbx)** | `.Item.Gbx`, `.Crystal.Gbx` | Custom or stock items, e.g. from [item.exchange](https://item.exchange/), and standalone Mesh Modeller saves. |
 | **Prefab (.Prefab.Gbx)** | `.Prefab.Gbx` | Game prefab hierarchies (groups of meshes/entities). |
 | **Mesh (.Mesh.Gbx)** | `.Mesh.Gbx` | Individual game meshes. |
 | **Vegetation Tree (.VegetTreeModel.Gbx)** | `.Gbx` | Game vegetation tree/bush models. |
@@ -19,6 +19,38 @@ Like map imports, these read referenced game files (materials, textures,
 nested meshes) from the game library — see
 [where game files come from](importing-maps.md#where-game-files-come-from).
 
+Item import progress appears in the 3D Viewport tool header. Parsing and some
+individual build steps run synchronously, so Blender can pause between updates
+on large files.
+
+## Imported lights
+
+Embedded and library-referenced lights use decoded point/spot types, color,
+intensity, range, emitting radius, shadow-generation flags and spot cones
+where available. Compiled custom point/spot lights are also imported when
+there are no source-light entries: each user-model instance uses its skeleton
+socket and linked joint transform. These lights are independent of embedded
+or library-referenced lights, not overrides of them. Blender energy and
+falloff remain approximations, not game-calibrated rendering.
+
+Select a light and open **Light Data Properties > Custom Properties** to see
+`tm_light_*` metadata: raw flags, animation periods/timer, and flare, projector,
+function and color-target references. `tm_night_only` is retained too.
+These do not enable animation, flares, projections or mood-dependent switching.
+Cones outside Blender's supported range are clamped with a warning; the
+original angles remain in the metadata. Missing or undecodable library
+lights retain generic settings and report the problem in the log and
+`tm_light_data_warning`.
+
+When a library `.Light.Gbx` fails to parse and on-demand fetching is enabled
+with Trackmania and the Openplanet plugin connected, the addon retries that
+file once per import using hook extraction. The replacement must parse as a
+complete light before it is accepted; a failed retry restores the previous
+file and logs the problem. Other unreadable GBX files also get one hook
+retry, except blacklisted crashers such as `PlugResource.Gbx`. Hook
+extraction can still crash Trackmania. This does not change light animation
+settings.
+
 ## Common option: LOD Level
 
 Most asset importers share one option:
@@ -26,12 +58,18 @@ Most asset importers share one option:
 - **LOD Level** (default `1`) — mesh level of detail. `1` is the highest
   detail; higher numbers select simpler meshes where the asset provides them.
 
-## Item (.Item.Gbx)
+## Item / Crystal (.Gbx)
 
 Imports an item-definition collection with separate geometry, collision and
 trigger objects, materials, and pivot/placement metadata. Standalone items do
 not get a map-instance Empty; map imports still use Empties to instance these
 definition collections.
+
+Standalone `.Crystal.Gbx` saves use the same importer and keep separate
+geometry layers, material assignments, texture UVs, visibility and collision
+flags. Editable geometry uses the Mesh Modeller's element pools rather than
+the embedded mesh layout used by finished items; versions 32–37 are supported.
+This adds import support, not GBX export or a lossless editor round-trip.
 
 Invisible collision geometry uses wire display and is excluded from renders.
 Triggers have no materials or UV maps. Object labels and supported material/
@@ -124,15 +162,17 @@ keeps the original texture colour.
 ### Experimental trimsheet candidates
 
 In the **Image/UV Editor** sidebar, open **Trimsheet (Experimental)**.
-Enter a material name (for example `TechnicsSpecials`) or an absolute
-`.Material.Gbx` path, then **Generate Candidates**. Game library preferences
-resolve the material, inherited texture bindings and BaseColor image.
-Generating again asks before replacing existing regions.
+Select a Blender material, then **Generate Candidates**. Its diffuse image
+is used and displayed in the Image/UV Editor; if several images feed Base
+Color, label the intended image node `Diffuse`. Generating again asks before
+replacing existing regions.
 
-The packed image and editable regions persist in the scene. The image overlay
-highlights the selected rectangle in orange; unconfirmed regions are blue,
-confirmed ones green. Use **+ / -** to add/remove rectangles and edit the name,
-UV bounds, repeat direction and confirmation below the list.
+The image reference and editable regions persist in the scene. Save or pack
+generated or modified images to preserve their pixels; the tool does not pack
+them automatically. The image overlay highlights the selected rectangle in
+orange; unconfirmed regions are blue, confirmed ones green. Use **+ / -** to
+add/remove rectangles and edit the name, UV bounds, repeat direction and
+confirmation below the list.
 
 These are **inferred candidates, not authored GBX trim definitions**. The
 prototype bounds non-black texture silhouettes or strong colour bands;
@@ -145,8 +185,9 @@ Names are placeholders and repeat directions start as **Unknown**.
 TechnicsSpecials is a packed parts atlas rather than a regular repeating
 trimsheet; confirming a rectangle does not make it authored game metadata.
 
-**Export Trimsheet JSON** writes schema version 1, extracted material/texture
-metadata, diagnostics and editable regions, preserving evidence and confirmation.
+**Export Trimsheet JSON** writes schema version 1, the Blender material and
+image information, diagnostics and editable regions, preserving evidence and
+confirmation. GBX-specific metadata is unavailable and exported as `null`.
 UV bounds are `[u_min, v_min, u_max, v_max]`, with bottom-left origin.
 Export rejects inverted/empty rectangles. Details also appear in the
 **Trimsheet Diagnostics** text datablock. This prototype does not assign UVs,

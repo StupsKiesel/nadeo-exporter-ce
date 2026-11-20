@@ -594,12 +594,12 @@ def extract_map(data, parent, opts):
             continue
         item = obj.body[0x03101002]
 
-        variant_id = str((item.flags >> 8) & 0xFF)  # TODO check in Ghidra
+        variant_id = str((item.flags >> 8) & 0xFF)  # TODO verify bits 8+ are IVariant
         model_name = f"I_{item.itemModel.id}_{variant_id}"
         # TODO variant
         if model_name not in map_ents.models:
             fileref = FileRef()
-            # TODO check flags: (item.flags & 1) == 1 when embedded?
+            # flags: bit 0 IsFlying, bit 1 IsAutoPiloted, bit 2 has packDesc (skin)
             if match_embedded(data, fileref, all_embedded_items, item.itemModel):
                 pass
             elif item.itemModel.id.lower() in allitems:

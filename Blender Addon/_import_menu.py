@@ -49,7 +49,7 @@ def unregister_icons() -> None:
 RELEASE_ENTRIES = (
     ("import_map_v4", "Map (.Map.Gbx)", "FILE_VOLUME"),
     ("import_replay", "Replay (.Replay.Gbx)", "ANIM"),
-    ("import_item", "Item (.Item.Gbx)", _item_icon),
+    ("import_item", "Item / Crystal (.Gbx)", _item_icon),
     ("import_prefab", "Prefab (.Prefab.Gbx)", "NODE_COMPOSITING"),
     ("import_mesh", "Mesh (.Mesh.Gbx)", "OUTLINER_DATA_MESH"),
     ("import_veget_tree", "Vegetation Tree (.VegetTreeModel.Gbx)", "MOD_DATA_TRANSFER"),

@@ -98,7 +98,7 @@ def collect_files() -> list[tuple[Path, str]]:
     files.extend(collect_tree(GBXBPY_DIR, Path(ADDON_PACKAGE) / "GBXBPY"))
     files.extend(collect_tree(GBXMAT_DIR, Path(ADDON_PACKAGE) / "GBXMAT"))
     files.extend(collect_tree(GPUUI_DIR, Path(ADDON_PACKAGE) / "gpuui"))
-    # Installed into OpenplanetNext/Plugins from the addon preferences.
+    # Game-specific extractors are installed from the addon preferences.
     files.extend(collect_tree(OPENPLANET_PLUGIN_DIR, Path(ADDON_PACKAGE) / "openplanet_plugin"))
 
     return sorted(files, key=lambda item: item[1])

@@ -17,7 +17,7 @@ log = logging.getLogger("trackmania_blender_bridge.map_import_v4")
 MAP_CONTENT = {
     "lod_level": 1, "import_all_lods": False,
     "import_baked": True, "apply_deco_height": True,
-    "import_spectators": False, "spectator_occupancy": 10,
+    "import_spectators": True, "spectator_occupancy": 30,
     "import_vista_vegetation": True, "fill_vegetation_slots": False,
     "import_grass_fins": False, "import_terrain_grass": False,
     "terrain_grass_density": 10,
@@ -38,7 +38,6 @@ def import_options(operator):
     from GBXBPY.map_import_v4 import ImportOptions
 
     content = effective_content(operator)
-    content.pop("import_skins")
     content["spectator_occupancy"] /= 100.0
     content["terrain_grass_density"] /= 100.0
     return ImportOptions(**content, download_locators=operator.download_locators)
@@ -103,7 +102,7 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
     import_mode: EnumProperty(
         name="Mode",
         items=[
-            ("MAP", "Map", "Map content with surroundings, mood, sky and clouds; no grass or added spectators"),
+            ("MAP", "Map", "Map content with surroundings, mood, sky, clouds and 30% spectator occupancy; no grass"),
             ("CUSTOM", "Custom", "Choose which map content to import"),
         ],
         default="MAP",
@@ -118,7 +117,7 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
     apply_deco_height: BoolProperty(name="Apply Deco Height to Absolute Placements", default=True)
     import_spectators: BoolProperty(
         name="Populate Spectators",
-        description="Fill grandstand seats with stock spectator meshes. The map stores no population, so seats and variants are chosen deterministically at random",
+        description="Fill authored spectator spawn slots with stock meshes. Seats and variants are chosen deterministically, not copied from the live game's random crowd",
         default=False,
     )
     spectator_occupancy: IntProperty(
@@ -195,13 +194,8 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
     )
     fetch_missing: BoolProperty(
         name="Fetch Missing Files from Trackmania",
-        description="Start the Openplanet web server for this import and request missing or broken game files; stop it when the import ends (Trackmania must be running)",
+        description="Request missing or broken game files, with one hook retry for failed GBX files except known crashers; hook extraction can crash Trackmania",
         default=True,
-    )
-    experimental_hooked_extraction: BoolProperty(
-        name="Experimental Hooked Extraction",
-        description="Retry incomplete or unreadable VegetTreeModel and Item.Gbx files once with Openplanet hook extraction; experimental and may crash Trackmania",
-        default=False,
     )
     from_dialog: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
 
@@ -219,9 +213,6 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
 
         layout.row(align=True).prop(self, "import_mode", expand=True)
         layout.prop(self, "fetch_missing", text="Fetch Missing Files")
-        hook_row = layout.row()
-        hook_row.enabled = self.fetch_missing
-        hook_row.prop(self, "experimental_hooked_extraction")
         layout.prop(self, "texture_resolution", text="Texture Size")
         layout.prop(self, "download_locators", text="Download Signs & Mods")
         if self.import_mode != "CUSTOM":
@@ -292,11 +283,18 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         return _running is None
 
     def execute(self, context):
-        from .. import _file_logging
+        from .. import _file_logging, _show_console_on_import
+        from GBXBPY.linux_paths import AmbiguousPathError
 
+        _show_console_on_import(context)
         owner = _file_logging.begin(self.filepath)
         try:
             result = self._execute(context)
+        except AmbiguousPathError as exc:
+            self._stop(context)
+            _file_logging.end(owner)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         except BaseException:
             self._stop(context)
             _file_logging.end(owner)
@@ -309,7 +307,7 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         return result
 
     def _execute(self, context):
-        from .. import _ensure_system_console_visible, _get_gamedata_dir, _make_skin_library, _openplanet_bridge
+        from .. import _get_gamedata_dir, _make_skin_library, _openplanet_bridge
         from GBXBPY.library import LibraryProvider
 
         if not os.path.isfile(self.filepath):
@@ -321,8 +319,10 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         if not gamedata or not os.path.isdir(gamedata):
             self.report({"ERROR"}, f"Game library folder unavailable: {gamedata}")
             return {"CANCELLED"}
-        _ensure_system_console_visible()
         if self.fetch_missing:
+            if not _openplanet_bridge.extract_dir():
+                self.report({"ERROR"}, "Set the Openplanet folder in addon preferences")
+                return {"CANCELLED"}
             try:
                 self._import_server = _openplanet_bridge.start_import_server()
             except OSError:
@@ -331,7 +331,6 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
         queue = self._import_server.queue if self._import_server is not None else None
         self._provider = LibraryProvider(
             gamedata, queue, fetch=self.fetch_missing,
-            experimental_hooked_extraction=self.experimental_hooked_extraction,
             extract_dir=_openplanet_bridge.extract_dir(),
         )
         self._started = time.perf_counter()
@@ -341,10 +340,7 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
 
             set_max_texture_size(int(self.texture_resolution))
             self._resolver = Resolver(gamedata)
-            self._skins = (
-                _make_skin_library(context, download=self.download_locators)
-                if effective_content(self)["import_skins"] else None
-            )
+            self._skins = _make_skin_library(context, download=self.download_locators)
             if self._skins is not None:
                 log.info(
                     "V4 skins: packs=%s user=%s cache=%s",
@@ -354,11 +350,11 @@ class TMBRIDGE_OT_ImportMapV4(bpy.types.Operator, ImportHelper):
             log.info(
                 "Map import starting:\n  Map: %s\n  GameData: %s\n"
                 "  Mode: %s\n  Content: %s\n  Map skins: %s\n"
-                "  Live requests: %s\n  Experimental hooked extraction: %s\n"
+                "  Live requests and GBX hook recovery: %s\n"
                 "  Texture limit: %s",
                 self.filepath, gamedata, self.import_mode, self._options,
                 effective_content(self)["import_skins"], self.fetch_missing,
-                self.experimental_hooked_extraction, self.texture_resolution,
+                self.texture_resolution,
             )
         except Exception as exc:
             log.exception("V4 import failed")

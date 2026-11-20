@@ -30,7 +30,10 @@ class TMBRIDGE_TrimRegion(bpy.types.PropertyGroup):
 
 
 class TMBRIDGE_TrimSheet(bpy.types.PropertyGroup):
-    material: StringProperty(name="Material", description="Material name or absolute .Material.Gbx path")
+    selected_material: PointerProperty(
+        name="Material", type=bpy.types.Material,
+        description="Blender material whose diffuse image is used to infer trim regions",
+    )
     metadata: StringProperty()
     image: PointerProperty(type=bpy.types.Image)
     regions: CollectionProperty(type=TMBRIDGE_TrimRegion)
@@ -68,41 +71,48 @@ def mesh_candidates(context, image_paths, reference_image=None):
     return candidates, skipped, matches
 
 
-def generate(context, material_name):
-    import GBXBPY
-    from GBXBPY.model.material import Material
-    from GBXBPY.resolve.material_lookup import MaterialResolver
-    from GBXBPY.trimsheet import infer_texture_regions
-    from GBXMAT.images import load_image
-    from . import _get_gamedata_dir, _gbxmat_adapter
+def _diffuse_image(material):
+    if material is None:
+        raise ValueError("Select a Blender material")
+    if not material.use_nodes or material.node_tree is None:
+        raise ValueError("The selected material has no shader nodes")
 
-    if not material_name.strip():
-        raise ValueError("Enter a material name or .Material.Gbx path")
-    resolver = GBXBPY.Resolver(_get_gamedata_dir(context))
-    path = material_name if Path(material_name).is_file() else MaterialResolver(resolver.gamedata_dir).find(material_name)
-    if not path:
-        raise ValueError(f"Material not found: {material_name}")
-    material = GBXBPY.load(str(path), resolver=resolver, recursive=False)
-    if not isinstance(material, Material):
-        raise ValueError("The selected GBX is not a material")
-    if material.raw._errors or material.raw._warns:
-        raise ValueError(f"Material parse diagnostics: {material.raw._errors}, {material.raw._warns}")
-    chain = list(_gbxmat_adapter._walk_material_and_parents(material, resolver))
-    for index, entry in enumerate(chain):
-        if entry.raw._errors or entry.raw._warns:
-            raise ValueError(f"Material parse diagnostics: {entry.source_path}: {entry.raw._errors}, {entry.raw._warns}")
-        if entry.base_material_path and index == len(chain) - 1:
-            raise ValueError(f"Material inheritance could not be fully resolved: {entry.base_material_path}")
-    refs = _gbxmat_adapter._collect_textures_from_linked(material, resolver, str(path))
-    diffuse = next((ref for ref in refs if ref.role == "Diffuse"), None)
-    if diffuse is None:
-        raise ValueError("Material has no resolved diffuse/BaseColor image")
-    image = load_image(diffuse.path, "Diffuse")
-    if image is None:
-        raise ValueError(f"Could not decode material image: {diffuse.path}")
+    nodes = material.node_tree.nodes
+    pending = [link.from_node for node in nodes if node.type == "BSDF_PRINCIPLED"
+               for link in node.inputs["Base Color"].links]
+    visited, images = set(), []
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        if node.type == "TEX_IMAGE":
+            if node.image is not None:
+                images.append(node)
+        else:
+            pending.extend(link.from_node for socket in node.inputs for link in socket.links)
+
+    if not images:
+        images = [node for node in nodes if node.type == "TEX_IMAGE" and node.image is not None
+                  and (node.label.casefold() in {"diffuse", "diffusetri"}
+                       or node.name.casefold() in {"diffuse", "diffusetri"})]
+    labelled = [node for node in images if node.label.casefold() in {"diffuse", "diffusetri"}
+                or node.name.casefold() in {"diffuse", "diffusetri"}]
+    choices = {node.image for node in labelled or images}
+    if not choices:
+        raise ValueError("No diffuse image found in the selected material")
+    if len(choices) != 1:
+        raise ValueError("Multiple base-color images found; label the diffuse image node 'Diffuse'")
+    return choices.pop()
+
+
+def generate(context, blender_material):
+    from GBXBPY.trimsheet import infer_texture_regions
+
+    image = _diffuse_image(blender_material)
     width, height = image.size
     if min(width, height) < 2 or len(image.pixels) != width * height * 4:
-        raise ValueError(f"Invalid decoded image buffer: {diffuse.path}")
+        raise ValueError(f"Invalid image buffer: {image.name}")
     buffer = array("f", [0]) * (width * height * 4)
     image.pixels.foreach_get(buffer)
     # Sample without scaling/mutating the shared material image.
@@ -115,38 +125,31 @@ def generate(context, material_name):
             row.append(buffer[offset:offset + 3])
         pixels.append(row)
     candidates = infer_texture_regions(pixels)
-    uv_candidates, skipped, matching_faces = mesh_candidates(context, [ref.path for ref in refs], image)
+    image_path = bpy.path.abspath(image.filepath, library=image.library) if image.filepath else ""
+    uv_candidates, skipped, matching_faces = mesh_candidates(context, [image_path] if image_path else [], image)
     candidates.extend(uv_candidates)
     diagnostics = ["No authored trim-region table decoded; all generated rectangles require review.",
                    "Texture silhouettes/bands are colour heuristics; bounds can include unused pixels.",
                    "Mesh rectangles bound UV islands, not trim semantics.",
-                   "Texture wrappers are resolved by existing image-path conventions, not fully decoded.",
+                   "Candidates use the selected Blender material's diffuse image; GBX metadata is unavailable.",
                    "Inference uses at most 256 samples per axis; adjust rectangle edges against the full-resolution image.",
                    "Repeat directions and semantic names are unknown until manually assigned."]
-    for entry in chain:
-        for slot in entry.texture_slots:
-            if slot.texture_path and not _gbxmat_adapter._linked_slot_texture(
-                    entry, slot.name, resolver, entry.source_path or str(path)):
-                diagnostics.append(f"Unresolved texture slot {slot.name}: {slot.texture_path}")
+    if image.packed_file is None and (image.source == "GENERATED" or image.is_dirty):
+        diagnostics.append("Save or pack the image to preserve its pixels in the blend file.")
     if not candidates:
         diagnostics.append("No confident boundaries or in-tile mesh UV regions found; add rectangles manually.")
     if skipped:
         diagnostics.append(f"Skipped {skipped} degenerate/out-of-tile mesh UV islands; wrapping was not guessed.")
     metadata = {
-        "schema": 1, "material_name": material.name, "material_path": str(Path(path).resolve()),
-        "base_material_path": material.base_material_path, "texture_size": material.texture_size,
-        "material_flags": material.flags,
-        "material_chain": [{"material_path": entry.source_path, "base_material_path": entry.base_material_path}
-                           for entry in chain],
-        "texture_slots": [{"slot": slot.name, "texture_path": slot.texture_path} for slot in material.texture_slots],
-        "textures": [{"role": ref.role, "image_path": ref.path} for ref in refs],
+        "schema": 1, "material_name": blender_material.name, "material_path": None,
+        "base_material_path": None, "texture_size": None, "material_flags": None,
+        "material_chain": None, "texture_slots": None,
+        "textures": [{"role": "Diffuse", "image_path": image_path, "image_name": image.name}],
         "image_size": [width, height], "sample_size": [sample_w, sample_h],
-        "shader_params": [{"name": param.name, "value": param.value} for param in material.shader_params],
+        "shader_params": None,
         "matching_mesh_faces": matching_faces, "diagnostics": diagnostics,
     }
     encoded = json.dumps(metadata)
-    if image.packed_file is None:
-        image.pack()
     sheet = context.scene.tm_trimsheet
     sheet.metadata = encoded
     sheet.image = image
@@ -182,7 +185,7 @@ class TMBRIDGE_OT_GenerateTrimSheet(bpy.types.Operator):
     @_progress.tracked("Generating Trimsheet")
     def execute(self, context):
         try:
-            count = generate(context, context.scene.tm_trimsheet.material)
+            count = generate(context, context.scene.tm_trimsheet.selected_material)
         except Exception as exc:
             log.exception("Trimsheet generation failed")
             self.report({"ERROR"}, f"Trimsheet generation failed: {exc}")
@@ -348,7 +351,7 @@ class TMBRIDGE_PT_TrimSheet(bpy.types.Panel):
         from GBXBPY.trimsheet import validate_bounds
         sheet = context.scene.tm_trimsheet
         layout = self.layout
-        layout.prop(sheet, "material")
+        layout.prop(sheet, "selected_material")
         layout.operator(TMBRIDGE_OT_GenerateTrimSheet.bl_idname, icon="VIEWZOOM")
         layout.label(text="Inferred rectangles - review required", icon="INFO")
         if sheet.image is not None:

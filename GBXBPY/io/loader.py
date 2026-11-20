@@ -41,23 +41,34 @@ def read_gbx(
         ParseError: When the file cannot be read or parsed.
     """
     abs_path = os.path.abspath(path)
-    from ..library import ensure
+    from .. import library
 
-    if not ensure(abs_path):
+    if not library.ensure(abs_path):
         raise ParseError(f"GBX file not found: {abs_path}")
 
-    try:
-        with open(abs_path, "rb") as f:
-            raw = f.read()
-    except OSError as e:
-        raise ParseError(f"Failed to read {abs_path}: {e}") from e
+    def read():
+        try:
+            with open(abs_path, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            raise ParseError(f"Failed to read {abs_path}: {e}") from e
 
-    return read_gbx_bytes(
-        raw,
-        source_path=abs_path,
-        recursive=recursive,
-        external_loader=external_loader,
-    )
+        return read_gbx_bytes(
+            raw,
+            source_path=abs_path,
+            recursive=recursive,
+            external_loader=external_loader,
+        )
+
+    try:
+        parsed = read()
+    except ParseError:
+        if not library.refetch(abs_path):
+            raise
+        return read()
+    if getattr(parsed, "_errors", None) and library.refetch(abs_path):
+        return read()
+    return parsed
 
 
 def read_gbx_bytes(

@@ -22,6 +22,8 @@ IDENTITY: Matrix4 = (
 
 @dataclass(slots=True)
 class MeshPart:
+    """A semantic part; role ``light`` carries one light and its full placement in ``matrix``."""
+
     name: str = ""
     mesh: Mesh | None = None
     role: str = "geometry"

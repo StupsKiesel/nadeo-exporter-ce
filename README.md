@@ -3,8 +3,8 @@
 **Nadeo Exporter CE** brings Trackmania (2020) maps and assets into Blender
 for **renders**, **cinematics** and **asset work**.
 
-[**Download addon v0.0.15 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.15/nadeo_exporter_ce_0.0.15.zip)
-| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.15)
+[**Download addon v0.0.16 (ZIP)**](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.16/nadeo_exporter_ce_0.0.16.zip)
+| [Release notes](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.16)
 | [Changelog](CHANGELOG.md)
 
 Install this ZIP in Blender; see the setup instructions below.
@@ -14,7 +14,7 @@ Install this ZIP in Blender; see the setup instructions below.
 *An imported Trackmania map rendered in Blender.*
 
 > [!NOTE]
-> **Version 0.0.15 is a public preview.** Mesh, material and environment
+> **Version 0.0.16 is a public preview.** Mesh, material and environment
 > fidelity is still being refined. Unsupported or unavailable content can
 > become placeholders. This is an import and preview tool: **writing GBX
 > files and exporting edited maps back to Trackmania are not supported**.
@@ -78,7 +78,7 @@ Install this ZIP in Blender; see the setup instructions below.
 ### 1. Install the packaged addon
 
 > [!IMPORTANT]
-> **[Download addon v0.0.15 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.15/nadeo_exporter_ce_0.0.15.zip)**,
+> **[Download addon v0.0.16 (ZIP)](https://github.com/StupsKiesel/nadeo-exporter-ce/releases/download/v0.0.16/nadeo_exporter_ce_0.0.16.zip)**,
 > then follow the installation steps below.
 > Do **not** install GitHub's **Code > Download ZIP** source archive.
 > Development packages additionally include a timestamp in their filename.
@@ -93,8 +93,7 @@ The internal addon folder is named `trackmania_blender_bridge`; this is expected
 ### 2. Install Python dependencies
 
 1. Expand the addon's preferences.
-2. Under **Python Dependencies**, click **Install Dependencies** if packages
-   are missing.
+2. Under **Python Dependencies**, click **Install** if packages are missing.
 3. Save useful work first: downloading/installing dependencies can block
    Blender's interface.
 4. Restart Blender when prompted. The dependency status should then be **Ready**.
@@ -103,23 +102,42 @@ The internal addon folder is named `trackmania_blender_bridge`; this is expected
 
 ![Addon preferences showing directories, dependency status, logging and Openplanet controls](doc/images/addon-preferences.png)
 
-*Empty paths use automatic discovery. Developer UI is not needed for normal use.*
+*Empty paths are not set. Select a detected game or browse for one, and use
+the Openplanet search button to find its user folder. Developer UI is not
+needed for normal use.*
 
 | Directory | Purpose |
 |---|---|
-| **Trackmania** | Game installation; used to locate packs and stock skins. Standard Ubisoft, Steam and Epic locations are discovered automatically. |
-| **Openplanet** | Openplanet's user data folder containing `Plugins` and `Extract`, not its program folder. Defaults to `%USERPROFILE%\OpenplanetNext`. |
-| **User Files** | Trackmania user folder containing custom skins; normally `Documents\Trackmania`. |
-| **GameData** | Extracted game library read by imports. Defaults to `Extract\GameData` under the Openplanet user folder. |
+| **Game** | Game installation; used to locate packs and resolve user files. |
+| **Openplanet** | Openplanet's user data folder containing `Plugins` and `Extract`, not its program folder. |
+| **User Files** | Resolved from the game's `Nadeo.ini`, or entered manually if unavailable. |
+| **Custom GameData Libraries** | Optional per-game extracted library. When disabled, imports use `Extract\GameData` under the Openplanet user folder. |
 
-Under **Advanced Paths**, you can override the game packs folder, enable a
-**Parse Cache Directory**, or choose a **Skin Cache Directory**.
+Custom GameData libraries are currently available for Trackmania 2020 only.
+Previously configured GameData, packs and resource-cache overrides are not
+used automatically; choose the old GameData folder under **Custom GameData
+Libraries** to keep using it.
+
+Openplanet search fills a single existing result, offers a choice for multiple
+results, and asks before replacing an existing entry. Suggested folders that do
+not yet exist are labelled and require confirmation. On Linux, discovery checks Steam
+libraries, Proton, `$WINEPREFIX`, `~/.wine`, and common Lutris and Bottles
+prefixes. Search again after moving the game. Custom locations can be entered
+manually; Flatpak Blender needs permission to access them.
+Linux/Wine detection has automated tests but the complete game/bridge setup
+still needs verification on a real Linux installation.
 
 ### Updating
 
-Install the newer packaged ZIP over the existing addon, then restart Blender.
-Preferences and installed dependencies are retained. If the bundled Openplanet
-plugin changed, use **Update Plugin** and reload it in Openplanet.
+1. In the addon preferences, under **Updates**, click **Check for Updates**.
+   The **Pre-releases** checkbox includes preview versions and is on by default.
+2. If a newer version is available, click **Install** with its version number
+   and confirm the dialog. Restart Blender afterwards.
+3. If the bundled Openplanet plugin changed, click **Update Plugin** and reload
+   it in Openplanet.
+
+Alternatively, install the newer packaged ZIP over the existing addon and
+restart Blender. Preferences and installed dependencies are retained.
 
 ## Openplanet and the GameData library
 
@@ -172,10 +190,11 @@ installation and optional sign/mod downloads are separate internet operations.
 > Prefer a drive with plenty of free space rather than filling your Windows
 > system drive.
 
-For an existing library on another drive, set **GameData** in addon preferences
-to that library's root folder, for example `D:\TrackmaniaLibrary\GameData`.
-It must contain the GameData contents, such as `Stadium`, rather than an
-additional nested GameData folder.
+For an existing Trackmania 2020 library on another drive, enable **Custom
+GameData Libraries** in addon preferences and set **Trackmania 2020** to its
+root folder, for example `D:\TrackmaniaLibrary\GameData`. It must contain the
+GameData contents, such as `Stadium`, rather than an additional nested GameData
+folder.
 
 The plugin always extracts to Openplanet's own `Extract\GameData` staging
 folder. With a custom library, the addon moves each extracted file from there
@@ -246,7 +265,7 @@ The same import submenu includes:
 
 | Entry | Use |
 |---|---|
-| **Item (.Item.Gbx)** | Custom or stock items, with supported geometry, materials and placement metadata. |
+| **Item / Crystal (.Gbx)** | Custom or stock items and standalone Mesh Modeller crystals. |
 | **Prefab (.Prefab.Gbx)** | Hierarchies of meshes, entities and supported lights. |
 | **Mesh (.Mesh.Gbx)** | Individual meshes with materials. |
 | **Vegetation Tree (.VegetTreeModel.Gbx)** | Supported tree or bush geometry. |
@@ -257,14 +276,13 @@ The same import submenu includes:
 
 Referenced files must be available in the game library. Most geometry
 importers offer **LOD Level**; `1` selects the highest detail where supported.
-The map import's experimental hook-extraction option does not apply to the
-separate standalone importers or library repair.
+Standalone importers use the available library without starting a live fetch.
 
 ## Map import options
 
 **Map** mode uses a preset including surroundings, mood lighting, sky,
-clouds, map signs/skins, texture mods and authored vista trees/bushes.
-Optional grass and added spectators are off; mesh LOD is `1`.
+clouds, map signs/skins, texture mods, authored vista trees/bushes and
+spectators at 30% occupancy. Optional grass is off; mesh LOD is `1`.
 
 **Custom** mode exposes individual content controls. Switching modes does
 not overwrite your Custom choices. Fetching files, texture size and sign/mod
@@ -272,15 +290,11 @@ downloads remain separate controls in both modes.
 
 ![Custom map import options including geometry, environment, textures and extra detail](doc/images/map-import-options.png)
 
-*This screenshot illustrates Custom mode with experimental hook extraction
-enabled under its former "Experimental Hooked Tree Extraction" label. The
-option is now called "Experimental Hooked Extraction" and covers tree models
-and item files. It is **off by default** and is not recommended for routine imports.*
+*This example has live fetching and sign/mod downloads disabled.*
 
 | Option | Effect |
 |---|---|
-| **Fetch Missing Files** | Allows live Openplanet requests for missing or broken game files. On by default. |
-| **Experimental Hooked Extraction** | Allows one hook retry per failed `VegetTreeModel` or `Item.Gbx` file during a map import. Off by default; requires Fetch Missing Files. |
+| **Fetch Missing Files** | Allows live Openplanet requests for missing or broken game files, with one hook retry per failed GBX file except known crashers. On by default. Hook extraction can crash Trackmania. |
 | **Texture Size** | Maximum texture resolution, from `128` to `2048`, or `Original`. Default `512`. |
 | **Download Signs & Mods** | Allows downloads from the URLs referenced by the map. |
 | **LOD Level / Import All LODs** | Choose mesh detail, or retain other available LODs as hidden alternatives. |
@@ -294,10 +308,10 @@ and item files. It is **off by default** and is not recommended for routine impo
 | **Populate Stands / Occupancy** | Add spectators at the selected occupancy. |
 
 > [!WARNING]
-> **Hook extraction is experimental and may crash Trackmania.** It is limited
-> to tree-model and item-file fallback requests, does not recover files reported as
-> `NOTFOUND`, and does not guarantee a complete or parseable result. A failed
-> hook attempt restores the previous file when one was available.
+> **Hook extraction is experimental and may crash Trackmania.** Save
+> game-editor work before importing. Known crashers and files reported as
+> `NOTFOUND` are skipped. A failed hook attempt restores the previous file when
+> one was available.
 
 ## Sidebar tools and MediaTracker
 
@@ -313,7 +327,7 @@ Press **N** in the 3D Viewport and select **Nadeo Exporter CE**.
 - **Embedded Data / Light Map:** inspect available map-owned data.
 - **Import Statistics:** review status, placements, assets and warnings.
 
-*The example shows a partial import with warnings, not a fidelity guarantee.*
+*Import warnings are available under Import Statistics.*
 
 ### Active
 
@@ -368,12 +382,13 @@ written back to the original map or GBX file.**
 
 ### Image/UV Editor: experimental trimsheets
 
-![Image Editor sidebar with experimental trimsheet candidate generation, rectangle display, JSON export and ZenUV integration](doc/images/image-editor-panel.png)
-
 In the **Image/UV Editor**, press **N** and open **Trimsheet (Experimental)**.
-Enter a material name or an absolute `.Material.Gbx` path, then choose
-**Generate Candidates**. Review and adjust the inferred rectangles; they are
-not authored GBX trim definitions.
+Select a Blender material, then choose **Generate Candidates**. Its diffuse
+image is used and displayed in the editor; ambiguous base-color images require
+a node labelled `Diffuse`. The detector can identify nested bands that occupy
+only part of a texture. Review and adjust the inferred rectangles; they are
+not authored GBX trim definitions. GBX-specific material metadata is not
+included in newly generated trimsheets.
 
 Use **Show Rectangles** to display the image overlay, **Export Trimsheet JSON**
 to save reviewed regions, or **Load into ZenUV** when ZenUV is enabled.
@@ -424,6 +439,10 @@ than treating the whole batch as successful.
 Openplanet's current log is normally `%USERPROFILE%\OpenplanetNext\Openplanet.log`.
 
 ### Logs and bug reports
+
+**Console on Import** opens Blender's system console for addon imports on
+Windows, unless it is already visible. Turn it off to leave the console
+unchanged. On Linux and macOS, launch Blender from a terminal to see output.
 
 Enable **Store in Blend** in the preferences' Logging row before reproducing
 an issue. Each import creates an internal Text log readable in Blender's

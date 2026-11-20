@@ -134,6 +134,8 @@ def decoration_candidates(decoration: str) -> list[str]:
 
 def collection_roots(gamedata_dir: str, collection: str) -> list[str]:
     roots = []
+    if not gamedata_dir:
+        return roots
     for name in _aliases_for(collection) + ["Stadium"]:
         path = os.path.join(gamedata_dir, name)
         if library.isdir(path) and path not in roots:

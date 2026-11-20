@@ -23,7 +23,7 @@ itself. The addon reads them from its **game library**:
   every missing file from the game during the import. The library fills
   itself over time, so later imports get faster.
 - Without the game running, the import uses only what is already in the
-  library (or your custom **Game Library** folder from the
+  library (or your custom GameData library from the
   [preferences](preferences.md)). Anything missing is reported and becomes a
   placeholder.
 
@@ -34,16 +34,18 @@ itself. The addon reads them from its **game library**:
 The top row selects **Map** (default) or **Custom**.
 
 - **Map** includes surroundings, mood lighting, sky, clouds, map signs/skins,
-  texture mods and authored vista trees/bushes. Grass and added spectators are
-  off. It uses LOD 1 and preserves baked blocks and decoration height.
+  texture mods, authored vista trees/bushes and spectators at the game's default
+  30% occupancy. Grass is off. It uses LOD 1 and preserves baked blocks and
+  decoration height.
 - **Custom** shows individual content options below. Switching modes does not
   overwrite your Custom choices.
 - **Fetch Missing Files** is always separate: it permits live requests for
   missing GBX files through Openplanet. Switching modes never changes it.
-- **Experimental Hooked Extraction** is off by default. When enabled, an
-  incomplete or unreadable `VegetTreeModel` or `Item.Gbx` file can be retried once with Openplanet's
-  hook mode. This is experimental and may crash Trackmania; it requires Fetch
-  Missing Files.
+- Incomplete or unreadable GBX files get one automatic hook-extraction retry
+  per import when **Fetch Missing Files** is enabled. Known crashers such as
+  `PlugResource.Gbx` are blacklisted. Hook extraction can still crash
+  Trackmania; save game-editor work before importing. There is no separate
+  experimental item/tree switch.
 - **Texture Size** stays available in either mode.
 - **Download Signs & Mods** independently permits downloads from map URLs.
 
@@ -55,8 +57,7 @@ start collapsed. Import All LODs is available under Geometry.
 
 | Option | Default | What it does |
 |---|---|---|
-| **Fetch Missing Files** | On | Permits live requests for missing GBX files through Openplanet. Requires Trackmania and the plugin. |
-| **Experimental Hooked Extraction** | Off | Retry an incomplete or unreadable `VegetTreeModel` or `Item.Gbx` once with Openplanet hook extraction. Experimental and may crash Trackmania. Requires Fetch Missing Files. |
+| **Fetch Missing Files** | On | Permits live requests through Openplanet and one hook retry per failed GBX file, except blacklisted crashers. Requires Trackmania and the plugin. Hook extraction can crash Trackmania. |
 | **Texture Size** | `512` | Maximum texture size: `Original`, `2048`, `1024`, `512`, `256` or `128`. Lower values save memory and import time; `Original` keeps full game resolution. |
 | **Download Signs & Mods** | On | Downloads custom sign/mod files referenced by URL when they are not found locally. |
 
@@ -87,6 +88,11 @@ start collapsed. Import All LODs is available under Geometry.
 After the import you can change mood, time of day, sky and clouds at any time
 from the **Mood** panel in the *Nadeo Exporter CE* sidebar tab.
 
+Mood lighting is an approximation of Trackmania's renderer: the importer builds
+a sun, ambient world light, and optional sky and clouds, but does not reproduce
+the game's film curve, auto-exposure, bloom, color-grading LUT, or full scene
+fog. Blender's color-management settings are left unchanged.
+
 ### Extra Detail
 
 | Option | Default | What it does |
@@ -97,6 +103,12 @@ from the **Mood** panel in the *Nadeo Exporter CE* sidebar tab.
 | **Stadium Grass Cards** | Off | Grass card strips along stadium grass edges. High polygon count — the dialog warns about it. |
 | **Populate Stands** | Off | Fills the stadium stands with spectators. |
 | **Occupancy** | `10%` | How full the stands are (when enabled). |
+
+Spectators use the stand prefab's authored spawn positions and rotations.
+Map mode fills 30% of these slots, rounded down per placement group. Occupied
+seats and stock spectator variants are deterministic, not a reconstruction of
+the live game's random crowd; identical stand prefabs share a crowd layout.
+Custom mode retains its independent opt-in and occupancy controls.
 
 ### Developer Settings
 
@@ -153,7 +165,11 @@ normal twin remain visible.
   panel — source file, block/item metadata and placement information.
 - Blocks are instanced: many placements share one reusable collection, which
   keeps the scene light. Use **Make Editable** in the *Selected Asset* panel
-  to turn a selected instance into editable objects.
+  to turn a selected block into editable objects. The block's displayed clips
+  (connection pieces such as borders and road ends) come along, also when you
+  select just one clip, and everything is gathered in one
+  `<block> (Editable)` collection. Scenes imported before 0.0.16 find the
+  clips from their geometry; re-import the map for exact results.
 - Importing a second map reuses already-built assets, so it is much faster.
 
 ## Partial imports and placeholders
@@ -172,9 +188,8 @@ start Trackmania, and re-import — missing files are then fetched on demand.
 
 ## Performance tips
 
-- Enable the **Parse Cache Directory** in the
-  [preferences](preferences.md) — repeated imports of the same assets become
-  dramatically faster.
+- V4 reuses parsed assets in memory during an import; persistent parse caching
+  is currently disabled.
 - Lower **Texture Resolution** and raise **LOD Level** for quick previews.
 - Leave **Terrain Grass**, **Stadium Grass Fins** and **Populate Spectators**
   off unless you need them; they add many objects and polygons.

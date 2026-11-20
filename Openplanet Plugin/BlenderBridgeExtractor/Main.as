@@ -36,8 +36,8 @@ string S_ServerUrl = "http://127.0.0.1:1337";
 [Setting category="General" name="Log every extracted file" description="Failures are always logged."]
 bool S_LogFiles = true;
 
-const string PLUGIN_VERSION = "2.2.1";
-const string TITLE = "Blender Bridge";
+const string PLUGIN_VERSION = "2.2.2";
+const string TITLE = "Blender Bridge (Trackmania 2020)";
 const uint INDEX_CHUNK = 5000;
 // Extract files back to back for up to this many ms before yielding a frame.
 const uint64 FRAME_BUDGET = 8;
@@ -45,6 +45,16 @@ const uint64 FRAME_BUDGET = 8;
 const int BATCH_GAP = 3;
 // How long the menu bar logo stays red after a batch with failures.
 const uint64 FAILURE_ICON_TIME = 30000;
+// Basenames, lowercase. Mirror GBXBPY/library/server.py's HOOK_BLACKLIST.
+const array<string> HOOK_BLACKLIST = {"plugresource.gbx"};
+
+bool IsHookBlacklisted(const string &in path) {
+    string key = NormalizePath(path).ToLower();
+    for (uint i = 0; i < HOOK_BLACKLIST.Length; i++) {
+        if (key == HOOK_BLACKLIST[i] || key.EndsWith("/" + HOOK_BLACKLIST[i])) return true;
+    }
+    return false;
+}
 
 bool g_connected = false;
 Net::HttpRequest@ g_ping;
@@ -90,24 +100,8 @@ string ServerUrl() {
 
 string GameVersion() {
     string version = "";
-#if TMNEXT
-    {
     auto app = GetApp();
     if (app !is null && app.SystemPlatform !is null) version = app.SystemPlatform.ExeVersion;
-    }
-#endif
-#if MP4
-    {
-    auto app = cast<CGameManiaPlanet>(GetApp());
-    if (app !is null && app.ManiaPlanetScriptAPI !is null) version = app.ManiaPlanetScriptAPI.ExeVersion;
-    }
-#endif
-#if MP41
-    {
-    auto app = cast<CGameManiaPlanet>(GetApp());
-    if (app !is null && app.ManiaPlanetScriptAPI !is null) version = app.ManiaPlanetScriptAPI.ExeVersion;
-    }
-#endif
     return version;
 }
 
@@ -421,9 +415,9 @@ void RunJobKind(const string &in id, const string &in kind, array<string>@ paths
             ReportProblem("Rejected unsafe hook diagnostic request");
             return;
         }
-        if (hook && NormalizePath(paths[0]).ToLower().EndsWith("/plugresource.gbx")) {
+        if (hook && IsHookBlacklisted(paths[0])) {
             Post("/api/plugin/jobs/" + id + "/result", "FAIL\t" + NormalizePath(paths[0]) + "\thook extraction disabled: crashes TM2020\trejected");
-            ReportProblem("PlugResource.Gbx hook extraction is disabled because it crashes TM2020");
+            ReportProblem(NormalizePath(paths[0]) + ": hook extraction is disabled because it crashes TM2020");
             return;
         }
         BeginBatch();
@@ -457,14 +451,8 @@ string NormalizePath(const string &in line) {
 
 bool IsFidValid(CSystemFidFile@ fid) {
     if (fid is null) return false;
-    bool valid = true;
-#if TMNEXT
     string written = fid.TimeWrite;
-    valid = written != "?";
-#endif
-    // ManiaPlanet has no TimeWrite sentinel. Extraction and size checks
-    // below remain authoritative for a non-null fid.
-    return valid;
+    return written != "?";
 }
 
 bool CollectFolder(CSystemFidsFolder@ folder, const string &in prefix, array<CSystemFidFile@>@ fids, array<string>@ paths) {

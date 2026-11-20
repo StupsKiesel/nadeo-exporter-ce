@@ -8,7 +8,8 @@ Tech3.FuncClouds.Gbx``). Its ``CPlugCloudsSolids`` lists authored
 textured from the mood's ``SkyClouds.dds`` 4x4 atlas. The mood's
 ``SkyCloudsParams.FuncCloudsParam.Gbx`` (``CPlugCloudsParam``) bends the
 layer down with distance (``PointDists`` -> ``PointHeights``) so far clouds
-sit on the horizon.
+sit on the horizon. Its ``HeightCenter`` selects the map/camera center or an
+explicit world XZ point for that distance curve.
 
 ``Clouds.tga`` of the mood is not part of this: the surface shaders sample
 it next to the sun shadow map, so it is the scrolling cloud shadow mask.
@@ -57,9 +58,11 @@ class CloudSprite:
 
 @dataclass(frozen=True, slots=True)
 class CloudsParam:
-    """``CPlugCloudsParam``: layer height over horizontal distance and wind."""
+    """``CPlugCloudsParam``: layer height over distance, center, and wind."""
 
     points: tuple[tuple[float, float], ...] = ((5000.0, 2500.0), (30000.0, -1000.0))
+    height_center: int = 0  # Camera=0, WorldXZ=1
+    height_center_xz: tuple[float, float] = (0.0, 0.0)
     bottom_near: float = 4500.0
     bottom_far: float = 0.0
     speed_scale: float = 200.0
@@ -160,10 +163,14 @@ def parse_clouds_param(data: bytes) -> CloudsParam:
         raise ValueError(f"bad point count {count}")
     values = struct.unpack_from(f"<{count * 2}f", data, offset + 4)
     points = tuple(sorted(zip(values[0::2], values[1::2])))
-    _version, _center, _cx, _cz, near, far, speed = struct.unpack_from(
+    _version, height_center, center_x, center_z, near, far, speed = struct.unpack_from(
         "<2I5f", data, _chunk(data, _PARAM_MAIN),
     )
-    return CloudsParam(points=points, bottom_near=near, bottom_far=far, speed_scale=speed)
+    return CloudsParam(
+        points=points, height_center=height_center,
+        height_center_xz=(center_x, center_z),
+        bottom_near=near, bottom_far=far, speed_scale=speed,
+    )
 
 
 def _hex(text: str | None, scale: float) -> Vec3 | None:
@@ -221,12 +228,17 @@ class PlacedSprite:
 
 def place_cloud_sprites(layer: CloudLayer, center: tuple[float, float]) -> list[PlacedSprite]:
     """Repeat the cluster tile around ``center`` (Blender XY) out to the last
-    ``PointDist`` and bend each sprite by the height curve; ``fog`` is the
+    ``PointDist``. ``center`` controls tiling and Camera-mode height; WorldXZ
+    uses ``HeightCenterXZ`` for the height curve. ``fog`` is the
     ``<Fog><Clouds>`` share towards the fog colour."""
     points = layer.param.points
     radius = points[-1][0] if points else 30000.0
     gx, gy = layer.grid_size
     cx, cy = center
+    height_center = (cx, cy)
+    if layer.param.height_center == 1:
+        # GBX world XZ maps to Blender XY as (X, -Z).
+        height_center = (layer.param.height_center_xz[0], -layer.param.height_center_xz[1])
     shading = layer.shading
     placed = []
     for i in range(math.floor((cx - radius) / gx) - 1, math.ceil((cx + radius) / gx) + 2):
@@ -234,7 +246,7 @@ def place_cloud_sprites(layer: CloudLayer, center: tuple[float, float]) -> list[
             for sprite in layer.sprites:
                 x = sprite.position[0] + i * gx
                 y = sprite.position[1] + j * gy
-                distance = math.hypot(x - cx, y - cy)
+                distance = math.hypot(x - height_center[0], y - height_center[1])
                 if distance > radius:
                     continue
                 z = sprite.position[2] + layer_height(points, distance)

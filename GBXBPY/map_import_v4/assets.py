@@ -302,11 +302,9 @@ class AssetLibrary:
     def populate_spectators(self, prefab: Prefab, index: int, entity: PrefabEntity, source: str) -> None:
         """Fill ``Type=Spectator`` seats with a synthetic sub-prefab.
 
-        Population is chosen by the game at runtime, so seats and variants are
-        drawn from an RNG seeded by prefab name and entity index: identical
-        stands look identical and repeated imports are stable. Two draws are
-        made per seat regardless of occupancy, so a higher occupancy only
-        adds spectators.
+        A fixed shuffled seat order sets the count, rounded down per group.
+        Variants are drawn for every seat so increasing occupancy only adds
+        spectators. Identical prefabs share a layout; imports are stable.
         """
         options = self.plan.options
         group = entity.placement_group
@@ -329,11 +327,13 @@ class AssetLibrary:
             )
             return
         rng = random.Random(f"{(prefab.name or '').casefold()}#{index}")
+        shuffled = seats.copy()
+        rng.shuffle(shuffled)
+        occupied = set(shuffled[:int(len(seats) * options.spectator_occupancy)])
         entities = []
         for seat in seats:
-            occupied = rng.random() < options.spectator_occupancy
             variant = variants[rng.randrange(len(variants))]
-            if occupied:
+            if seat in occupied:
                 entities.append(PrefabEntity(
                     name=f"Spectator{seat:03d}", mesh=variant, transform=group.slots[seat],
                 ))

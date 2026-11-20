@@ -5,8 +5,7 @@
 ## Requirements
 
 - **Blender 3.6.2 or newer**
-- **Windows** (game and Openplanet folders are discovered automatically on
-  Windows; on other systems you must set paths manually)
+- **Windows or Linux** (use the path search buttons or set locations manually)
 - Internet access once, for the Python dependency install
 - Optional but recommended: **Trackmania (2020)** with
   **[Openplanet](https://openplanet.dev/)** installed, so the addon can fetch
@@ -44,12 +43,18 @@ The packages are installed into your Blender user scripts folder, so they
 survive addon updates. A new Blender major version may require running the
 installer once again.
 
+If installation reports `No module named 'gbx.lzo'`, an existing `gbx` folder
+may contain a binary built for another Python version (for example, after
+copying settings from an older Blender). With the updated addon installed,
+click **Install Dependencies** again to replace the unavailable packages
+with builds for the current Blender, then restart Blender. Do not copy
+dependency folders between Blender versions.
+
 ## 3. First-run preferences
 
-Most people can leave every path empty — the addon auto-detects Ubisoft,
-Steam and Epic Trackmania installs and the default Openplanet folder. Check
-the [preferences reference](preferences.md) if you need to point the addon at
-non-standard locations.
+Select the game installation and matching Openplanet folder. GameData defaults
+to Openplanet's `Extract\GameData`; enable custom libraries if you want another
+location. See the [preferences reference](preferences.md) for details.
 
 One decision matters for map imports — where game files come from:
 
@@ -59,7 +64,8 @@ One decision matters for map imports — where game files come from:
   missing game file from the running game automatically; you don't need to
   prepare anything.
 - **Alternative: an existing GameData folder.** If you already have an
-  extracted `GameData` folder, set it as **Game Library** in the preferences.
+  extracted `GameData` folder, enable **Custom GameData Libraries** and select
+  it for the game in the preferences.
   Imports then read from it directly and never need the game running.
 
 ## 4. First import

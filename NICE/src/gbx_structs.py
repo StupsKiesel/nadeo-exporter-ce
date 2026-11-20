@@ -793,6 +793,8 @@ class GbxNodeRefAdapter(Adapter):
 
     def _encode(self, obj, ctx, path):
         # print(obj)
+        if obj is not None and "_invalid_index" in obj:
+            return Container(index=obj._invalid_index, internal_node=None)
         if obj == None or obj._index == -1:
             return Container(index=-1)
 
@@ -1218,6 +1220,10 @@ body_chunks[0x03043011] = Struct(
     "challengeParameters" / GbxNodeRef,  # CGameCtnChallengeParameters
     "kind" / GbxEMapKind,
 )
+body_chunks[0x03043018] = Struct(
+    "isLapRace" / GbxBool,
+    "nbLaps" / Int32ul,
+)
 body_chunks[0x0304301F] = Struct(
     "mapInfo" / GbxMeta,
     "mapName" / GbxString,
@@ -1268,6 +1274,18 @@ body_chunks[0x03043029] = Struct(
 body_chunks[0x0304302A] = Struct(
     "u01" / GbxBool,
 )
+# Default thumbnail camera, recomputed by the editor when the content changes
+# (matches the live ThumbnailCam_* values; retaking the thumbnail only changes the JPEG).
+body_chunks[0x03043036] = Struct(
+    "thumbnailPosition" / GbxVec3,
+    "thumbnailPitchYawRoll" / GbxVec3,  # radians
+    "thumbnailFov" / GbxFloat,  # 90
+    "u01" / GbxFloat,  # 10
+    "u02" / GbxFloat,  # 0
+    "thumbnailNearClipPlane" / GbxFloat,  # -1
+    "thumbnailFarClipPlane" / GbxFloat,  # -1
+    "comments" / GbxString,
+)
 body_chunks[0x03043040] = GbxLookbackStringContext(
     Struct(
         "version" / Int32ul,  # 8
@@ -1288,6 +1306,141 @@ body_chunks[0x03043040] = GbxLookbackStringContext(
         "u07" / If(this.version != 6, GbxArrayOf(Int32sl)),
         "snappedIndexes" / GbxArrayOf(Int32sl),
     )
+)
+body_chunks[0x03043042] = Struct(
+    "version" / Int32ul,  # 1
+    "authorVersion" / Int32ul,
+    "authorLogin" / GbxString,
+    "authorNickname" / GbxString,
+    "authorZone" / GbxString,  # e.g. World|Europe|Germany
+    "authorExtraInfo" / GbxString,
+)
+
+
+class ScriptTraitsReader:
+    """Reads CScriptTraitsMetadata chunk 0x11002000 (versions 2..6), as in GBX.NET."""
+
+    VOID, BOOL, INT, REAL, TEXT, ARRAY, VEC2, VEC3, INT3, INT2, STRUCT = 0, 1, 2, 3, 5, 7, 9, 10, 11, 14, 15
+
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+
+    def take(self, fmt):
+        values = struct.unpack_from("<" + fmt, self.data, self.pos)
+        self.pos += struct.calcsize(fmt)
+        return values if len(values) > 1 else values[0]
+
+    def small_len(self):
+        first = self.take("B")
+        return first & 127 | (self.take("H") << 7 if first > 127 else 0)
+
+    def string(self, length):
+        text = self.data[self.pos : self.pos + length]
+        if len(text) != length:
+            raise ValueError("truncated string")
+        self.pos += length
+        return text.decode("utf-8")
+
+    def small_string(self):
+        return self.string(self.small_len())
+
+    def long_string(self):
+        return self.string(self.take("I"))
+
+    def read(self):
+        if self.take("I") != 0x11002000:
+            raise ValueError("not a CScriptTraitsMetadata chunk")
+        chunk_version = self.take("I")
+        if not 2 <= chunk_version <= 6:
+            raise ValueError(f"unsupported traits version {chunk_version}")
+        self.version = chunk_version - 2
+        count = self.small_len() if self.version >= 1 else self.take("I")
+        traits = Container()
+        if self.version < 3:
+            for _ in range(count):
+                name = self.small_string() if self.version >= 1 else self.long_string()
+                traits[name] = self.contents(self.type())
+        else:
+            types = [self.type() for _ in range(count)]
+            for _ in range(self.small_len()):
+                name = self.small_string()
+                traits[name] = self.contents(types[self.small_len()])
+        if self.take("I") != 0xFACADE01:
+            raise ValueError("missing end marker")
+        if self.pos != len(self.data):
+            raise ValueError(f"{len(self.data) - self.pos} trailing bytes")
+        return chunk_version, traits
+
+    def type(self):
+        kind = self.take("B") if self.version >= 1 else self.take("I")
+        if kind == self.ARRAY:
+            return (kind, self.type(), self.type())
+        if kind == self.STRUCT:
+            if self.version < 2:
+                raise ValueError("structs need traits version >= 2")
+            member_count = self.take("B")
+            name = self.long_string()
+            members = []
+            for _ in range(member_count):
+                member_name = self.long_string()
+                member_type = self.type()
+                if self.version < 4:
+                    self.contents(member_type)  # default value
+                members.append((member_name, member_type))
+            return (kind, name, members)
+        return (kind,)
+
+    def contents(self, script_type):
+        kind = script_type[0]
+        if kind == self.BOOL:
+            return bool(self.take("B") if self.version >= 1 else self.take("I"))
+        if kind == self.INT:
+            return self.take("i")
+        if kind == self.REAL:
+            return self.take("f")
+        if kind == self.TEXT:
+            return self.small_string() if self.version >= 1 else self.long_string()
+        if kind == self.VEC2:
+            return self.take("2f")
+        if kind == self.VEC3:
+            return self.take("3f")
+        if kind in (self.INT3, self.INT2):
+            return self.take("3i" if kind == self.INT3 else "2i")
+        if kind == self.ARRAY:
+            _, key_type, value_type = script_type
+            count = self.small_len() if self.version >= 1 else self.take("I")
+            if key_type[0] == self.VOID:
+                return [self.contents(value_type) for _ in range(count)]
+            return {self.contents(key_type): self.contents(value_type) for _ in range(count)}
+        if kind == self.STRUCT:
+            return Container((name, self.contents(member)) for name, member in script_type[2])
+        raise ValueError(f"unsupported script type {kind}")
+
+
+class AScriptTraitsMetadata(Adapter):
+    """Decoded view of an inline CScriptTraitsMetadata node: ``traits`` maps each
+    metadata variable name to its value (dict for keyed arrays, Container for
+    structs, tuples for vectors). The original bytes are kept and written back
+    unchanged, so editing ``traits`` does not change the written file."""
+
+    def _decode(self, raw, context, path):
+        try:
+            version, traits = ScriptTraitsReader(raw).read()
+        except (ValueError, struct.error, UnicodeDecodeError) as exc:
+            log.debug("Script metadata not decoded: %s", exc)
+            return Container(version=None, traits=None, _raw=raw)
+        return Container(version=version, traits=traits, _raw=raw)
+
+    def _encode(self, obj, context, path):
+        return obj._raw
+
+
+# Map script metadata (Race_AuthorRaceWaypointTimes, LibMapType_MapTypeVersion,
+# editor plugin values such as EPP_MappingTime, ...).
+body_chunks[0x03043044] = Struct(
+    "version" / Int32ul,  # 0
+    "scriptMetadata" / Prefixed(Int32ul, AScriptTraitsMetadata(GreedyBytes)),
 )
 body_chunks[0x03043048] = Struct(
     "version" / Int32ul,
@@ -1400,6 +1553,17 @@ body_chunks[0x03043062] = Struct(
 body_chunks[0x03043063] = Struct(
     "version" / Int32ul,  # 0
     "itemsAnimPhaseOffsets" / Array(lambda ctx: len(get_chunk(ctx, 0x3043040).anchoredObjects), GbxEAnimPhaseOffset),
+)
+body_chunks[0x03043065] = Struct(
+    "version" / Int32ul,  # 0
+    "itemsForegroundPackDescs"
+    / Array(
+        lambda ctx: len(get_chunk(ctx, 0x3043040).anchoredObjects),
+        Struct(
+            "hasForegroundPackDesc" / GbxBoolByte,
+            "foregroundPackDesc" / If(this.hasForegroundPackDesc, GbxFileRef),  # second skin layer
+        ),
+    ),
 )
 body_chunks[0x0304306C] = Struct(
     "version" / Int32ul,  # 0
@@ -2154,8 +2318,9 @@ body_chunks[0x03101002] = Struct(
     "anchorTreeId" / GbxLookbackString,
     "absolutePositionInMap" / GbxVec3,
     "waypointSpecialProperty" / GbxClass,
-    "u03" / If(this.version < 5, Int32sl),
+    "pivotIndex" / If(this.version < 5, Int32sl),
     StopIf(this.version < 4),
+    # bit 0 IsFlying, bit 1 IsAutoPiloted, bit 2 has packDesc (skin)
     "flags" / Int16ul,
     StopIf(this.version < 5),
     "pivotPosition" / GbxVec3,
@@ -2164,17 +2329,49 @@ body_chunks[0x03101002] = Struct(
     StopIf(this.version < 7),
     "packDesc" / If(lambda this: (this.flags & 4) == 4, GbxFileRef),
     StopIf(this.version < 8),
-    "u01" / GbxVec3,
-    "u02" / GbxVec3,
+    "boundingBox" / Struct("min" / GbxVec3, "max" / GbxVec3),  # (0,0,0)/(-1,-1,-1) = unset
 )
 body_chunks[0x03101004] = Struct(
     "version" / Int32ul,  # 0
-    "snappedOnGroup" / Int32sl,  # -1 = none
+    "botPathIndex" / Int32sl,  # -1 = none
 )
+
+
+def read_item_script_parameters(data, traits_version):
+    """ScriptParameter[] of chunk 0x03101005; traits_version -1 is the legacy layout."""
+    reader = ScriptTraitsReader(data)
+    reader.version = max(traits_version, 0)
+    legacy_types = (reader.BOOL, reader.INT, reader.REAL, reader.TEXT)
+    parameters = Container()
+    for _ in range(reader.take("I")):
+        name = reader.long_string()
+        script_type = (legacy_types[reader.take("I")],) if traits_version < 0 else reader.type()
+        parameters[name] = reader.contents(script_type)
+    if reader.pos != len(data):
+        raise ValueError(f"{len(data) - reader.pos} trailing bytes")
+    return parameters
+
+
+class AItemScriptParameters(Adapter):
+    """Decoded ``parameters`` (name -> value); the original bytes are written back unchanged."""
+
+    def _decode(self, raw, context, path):
+        version = context.scriptTraitsVersion
+        try:
+            parameters = read_item_script_parameters(raw, -1 if version is None else version)
+        except (ValueError, IndexError, struct.error, UnicodeDecodeError) as exc:
+            log.debug("Item script parameters not decoded: %s", exc)
+            parameters = None
+        return Container(parameters=parameters, _raw=raw)
+
+    def _encode(self, obj, context, path):
+        return obj._raw
+
+
 body_chunks[0x03101005] = Struct(
     "version" / Int32ul,  # 1
-    "lightmapQuality" / Int32ul,
-    "u01" / Byte,
+    "scriptTraitsVersion" / If(this.version >= 1, Byte),  # 4
+    "scriptParameters" / AItemScriptParameters(GreedyBytes),
 )
 
 # 0311D CGameCtnZoneGenealogy
@@ -2413,35 +2610,31 @@ body_chunks[0x0335B000] = Struct(
 
 body_chunks[0x400100A] = Struct(
     "version" / Int32ul,  # 0
-    "u01" / GbxFloat,
-    "u02" / GbxFloat,
-    "u03" / GbxFloat,
-    "u04" / Int32sl,
-    "u05" / GbxFloat,
-    "u06" / GbxFloat,
-    "u07" / GbxFloat,
-    "u08" / GbxFloat,
-    "u09" / GbxVec3,
+    "color" / GbxVec3,
+    "flags" / Hex(Int32ul),
+    "intensity" / GbxFloat,
+    "diffuseIntensity" / GbxFloat,
+    "shadowIntensity" / GbxFloat,
+    "flareIntensity" / GbxFloat,
+    "shadowRGB" / GbxVec3,
 )
 
 # 04002 CGxLightBall
 # inherits GxLightPoint
 
 body_chunks[0x04002008] = Struct(
-    "u01" / Int32sl,
-    "u02" / GbxFloat,
-    "u03" / GbxFloat,
-    "u04" / GbxFloat,
-    "u05" / GbxFloat,
-    "u06" / GbxFloat,
-    "u07" / GbxFloat,
-    "u08" / GbxFloat,
-    "u09" / GbxFloat,
-    "u10" / GbxFloat,
-    "u11" / GbxFloat,
-    "u12" / GbxFloat,
-    "u13" / GbxFloat,
-    "u14" / GbxFloat,
+    "flags" / Hex(Int32ul),
+    "radius" / GbxFloat,
+    "radiusSpecular" / GbxFloat,
+    "radiusShadow" / GbxFloat,
+    "radiusFlare" / GbxFloat,
+    "emittingRadius" / GbxFloat,
+    "emittingCylinderLenZ" / GbxFloat,
+    "attHTnLR" / GbxFloat,
+    "attHTnLR2" / GbxFloat,
+    "ambientRGB" / GbxVec3,
+    "attHyper2DerivAt0" / GbxFloat,
+    "attHyper2Tension" / GbxFloat,
 )
 body_chunks[0x04002009] = Struct(
     "u01" / GbxFloat,
@@ -2462,16 +2655,17 @@ body_chunks[0x04003004] = Struct(
 # inherits CGxLightBall
 
 body_chunks[0x0400B003] = Struct(
-    "version" / Int32ul,  # 1
-    "u01" / Int32sl,
-    "u02" / GbxFloat,
-    "u03" / GbxFloat,
-    "u04" / GbxFloat,
-    "u05" / GbxFloat,
-    "u06" / GbxFloat,
-    "u07" / If(this.version >= 1, Int8sl),
-    "u08" / If(this.version >= 1, Int8sl),
-    "u09" / GbxFloat,
+    "version" / ExprValidator(Int32ul, obj_ <= 1),
+    "flags" / Hex(Int32ul),
+    "angleInner" / GbxFloat,
+    "angleOuter" / GbxFloat,
+    "angleFlare" / GbxFloat,
+    "angleInnerShadow" / GbxFloat,
+    "angleOuterShadow" / GbxFloat,
+    "falloffExponent" / GbxFloat,
+    "subLightCountX" / If(this.version >= 1, Byte),
+    "subLightCountY" / If(this.version >= 1, Byte),
+    "legacyValue" / If(this.version == 0, Int32sl),
 )
 
 # 0500B CFuncPlug
@@ -2734,6 +2928,100 @@ def get_chunk(ctx, chunkId):
     return ctx._chunks[chunkId]
 
 
+def crystal_used_handles(pool):
+    indices = []
+    seen = set()
+    index = pool.firstUsed
+    while index != 0x7FFFFFFF:
+        if not 0 <= index < len(pool.handles) or index in seen or pool.handles[index].isFree:
+            raise ValidationError("Invalid crystal element handle chain")
+        seen.add(index)
+        handle = pool.handles[index]
+        indices.append((index << 10) | (handle.generation & 0x3FF))
+        index = handle.next
+    if len(indices) != sum(not h.isFree for h in pool.handles):
+        raise ValidationError("Crystal element handle chain omits used handles")
+    return indices
+
+
+GbxCrystal_ElementPool = Struct(
+    "handles" / GbxArray(
+        "isFree" / GbxBool,
+        "generation" / Int32sl,
+        "next" / Int32sl,
+    ),
+    "firstFree" / Int32sl,
+    "firstUsed" / Int32sl,
+)
+
+GbxCrystal_Tail = Struct(
+    "u22" / Int32sl,
+    "u30" / If(this._.version < 36, Struct(
+        "numFaces" / Int32sl,
+        "numEdges" / Int32sl,
+        "numVerts" / Int32sl,
+        "faces" / Array(this.numFaces, Int32sl),
+        "edges" / Array(this.numEdges, Int32sl),
+        "verts" / Array(this.numVerts, Int32sl),
+        "u17" / Int32sl,
+    )),
+)
+
+GbxCrystal_Editable = Struct(
+    Check(lambda ctx: 32 <= ctx._.version <= 37),
+    "vertexPool" / GbxCrystal_ElementPool,
+    "edgePool" / GbxCrystal_ElementPool,
+    "facePool" / GbxCrystal_ElementPool,
+    "vertexHandles" / Computed(lambda ctx: crystal_used_handles(ctx.vertexPool)),
+    "edgeHandles" / Computed(lambda ctx: crystal_used_handles(ctx.edgePool)),
+    "faceHandles" / Computed(lambda ctx: crystal_used_handles(ctx.facePool)),
+    "edges" / Array(lambda ctx: len(ctx.edgeHandles), GbxInt2),
+    Check(lambda ctx: {h for edge in ctx.edges for h in (edge.x, edge.y)}.issubset(ctx.vertexHandles)),
+    "mesh" / Struct(
+        "version" / ExprValidator(Int32ul, obj_ == 0),
+        "positions" / GbxArrayOf(GbxVec3),
+        "normals" / GbxArrayOf(GbxVec3),
+        "faces" / GbxArray(
+            "vertices" / GbxArray(
+                "positionIndex" / Int32sl,
+                "normalIndex" / Int32sl,
+                "color" / GbxVec4,
+            ),
+            "texCoordLayers" / GbxArray(
+                "channel" / Int32sl,
+                "texCoords" / Array(lambda ctx: len(ctx._._.vertices), GbxVec2),
+            ),
+        ),
+        Check(lambda ctx: all(
+            0 <= v.positionIndex < len(ctx.positions)
+            for face in ctx.faces for v in face.vertices
+        )),
+    ),
+    Check(lambda ctx: len(ctx.vertexHandles) == len(ctx.mesh.positions)
+          and len(ctx.faceHandles) == len(ctx.mesh.faces)),
+    "faceTypes" / Array(lambda ctx: len(ctx.faceHandles), Int32sl),
+    "faceProperties" / Array(lambda ctx: len(ctx.faceHandles), Struct(
+        "properties" / Int32sl,
+        "flags" / Int32sl,
+        "group_index" / Int32sl,
+    )),
+    *GbxCrystal_Tail.subcons,
+    "materials" / Array(lambda ctx: len(ctx.faceHandles), Struct(
+        "material_index" / Int32sl,
+        "legacyMaterialValues" / GbxVec4,
+    )),
+    "vertices" / Computed(this.mesh.positions),
+    "faces" / Computed(lambda ctx: [
+        Container(
+            inds=[v.positionIndex for v in face.vertices],
+            uv=face.texCoordLayers[0].texCoords if face.texCoordLayers else [],
+            group_index=ctx.faceProperties[i].group_index,
+            material_index=ctx.materials[i].material_index,
+        )
+        for i, face in enumerate(ctx.mesh.faces)
+    ]),
+)
+
 GbxCrystal = Struct(
     "version" / Int32ul,  # 32-37
     "u06" / Int32sl,  # 4
@@ -2744,21 +3032,28 @@ GbxCrystal = Struct(
     "u11" / GbxFloat,  # 128
     "u12" / Int32sl,  # 1
     "u13" / GbxFloat,  # 192
-    "u14" / Int32sl,  # 0 - SAnchorInfo array?
+    "u14" / Int32sl,  # AnchorInfo count
+    "anchorInfos" / Default(Array(this.u14, Struct(
+        "u01" / GbxBool,
+        "u02" / GbxBool,
+        "transform" / GbxIso4,
+        "name" / GbxString,
+        "u03" / Int32sl,
+    )), []),
     "groups"
     / GbxArray(
         "u01" / If(this._._.version >= 31, Int32sl),
-        "u02" / IfThenElse(this._._.version >= 36, Byte, Int32sl),  # bool?
+        "u02" / IfThenElse(this._._.version >= 35, Byte, Int32sl),  # bool?
         "u03" / Int32sl,  # -1, nodref?
         "name" / GbxString,
         "u04" / Int32sl,  # -1, nodref?
         "u05" / GbxArrayOf(Int32sl),
     ),
-    "isEmbeddedCrystal" / IfThenElse(this.version >= 34, GbxBoolByte, GbxBool),
+    "isEmbeddedCrystal" / IfThenElse(this.version >= 35, GbxBoolByte, GbxBool),
     "u30" / If(this.version >= 33, Int32sl),  # 0
     "u31" / If(this.version >= 33, Int32sl),  # 0
     "embeddedCrystal"
-    / Struct(
+    / If(this.isEmbeddedCrystal, Struct(
         "vertices" / GbxArrayOf(GbxVec3),
         "edgesCount" / Int32ul,
         "unfacedEdgesCount" / If(this._.version >= 35, Int32ul),
@@ -2808,21 +3103,9 @@ GbxCrystal = Struct(
                 ),
             ),
         ),
-        "u22" / Int32sl,
-        "u30"
-        / If(
-            this._.version < 36,
-            Struct(
-                "numFaces" / Int32sl,
-                "numEdges" / Int32sl,
-                "numVerts" / Int32sl,
-                "faces" / Array(this.numFaces, Int32sl),
-                "edges" / Array(this.numEdges, Int32sl),
-                "verts" / Array(this.numVerts, Int32sl),
-                "u17" / Int32sl,
-            ),
-        ),
-    ),
+        *GbxCrystal_Tail.subcons,
+    )),
+    "editableCrystal" / Default(If(~this.isEmbeddedCrystal, GbxCrystal_Editable), None),
 )
 GbxCrystal_Geometry = Struct(
     "crystal" / GbxCrystal,
@@ -3253,19 +3536,27 @@ body_chunks[0x09015002] = Struct(
 # 0901D CPlugLight
 
 body_chunks[0x0901D003] = Struct(
-    "version" / Int32ul,  # 1
-    "image" / GbxNodeRef,  # CPlugFileImg
-    "u01" / GbxFloat,
-    "u02" / GbxFloat,
+    "version" / ExprValidator(Int32ul, obj_ <= 1),
+    "imageAnim" / GbxNodeRef,  # CPlugFileImg
+    "animPeriodMin" / GbxFloat,
+    "animPeriodMax" / GbxFloat,
     StopIf(this.version < 1),
     "animTimerName" / GbxLookbackString,
 )
 body_chunks[0x0901D004] = Struct(
-    "version" / Int32ul,  # 0
-    "u01_CGxLightSpot" / GbxNodeRef,  # CGxLightSpot
-    "u02" / Int32sl,
-    # "u03_CPlugMaterialColorTargetTable" / GbxNodeRef,  # CPlugMaterialColorTargetTable
-    "rest" / GbxBytesUntilFacade,
+    "version" / ExprValidator(Int32ul, obj_ == 0),
+    "gxLightModel" / GbxNodeRef,
+    "funcLight" / GbxNodeRef,
+    "bitmapFlare" / GbxNodeRef,
+    "bitmapProjector" / GbxNodeRef,
+    "flags" / Hex(Int32ul),
+    "colorTargetTable" / GbxNodeRef,
+    "flagNames" / Computed(lambda ctx: [
+        name for bit, name in (
+            (1, "NightOnly"), (2, "ReflectByGround"), (4, "DuplicateGxLight"),
+            (8, "SceneLightOnlyWhenTreeVisible"), (16, "SceneLightAlwaysActive"),
+        ) if ctx.flags & bit
+    ]),
 )
 
 # 09011 CPlugBitmap (Texture / TextureArray)
@@ -4432,8 +4723,7 @@ body_chunks[0x09145000] = Struct(
                             "Phase01" / GbxFloat,
                             "Phase01Max" / GbxFloat,
                             StopIf(this.version < 2),
-                            "CastStaticShadow"
-                            / GbxBool,  # "!! Attention reserve a de rares objets dont l\'animation conserve a peu pres la shadow (tube qui tourne sur lui meme /ex), cette shadow (vue au loin) ne sera pas animee !!"
+                            "CastStaticShadow" / Int32sl,  # Preserve the -1 sentinel as well as 0 and 1.
                         ),
                         # NPlugDyna_SPrefabConstraintParams
                         0x2F0C8000: Struct(
@@ -6290,7 +6580,7 @@ body_chunks[0x2F0CA000] = Struct(
     ),
     "ShaderTcData_TransSub"
     / If(
-        this.ShaderTcType == 1,
+        lambda ctx: ctx.ShaderTcType in ("TransSubTexture", 1),
         Struct(
             "NbSubTexture" / Int32ul,
             "NbSubTexturePerLine" / Int32ul,

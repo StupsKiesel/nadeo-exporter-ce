@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from typing import Optional
 
 from .index import GameIndex
@@ -22,6 +23,12 @@ PLUGIN_ID = "BlenderBridgeExtractor"
 
 
 def openplanet_dir() -> str:
+    if sys.platform.startswith("linux"):
+        from ..linux_paths import discover, unique
+
+        found = unique(discover().openplanet, "Openplanet")
+        if found:
+            return found
     return os.path.join(os.path.expanduser("~"), "OpenplanetNext")
 
 

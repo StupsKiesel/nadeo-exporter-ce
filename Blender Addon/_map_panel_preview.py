@@ -422,12 +422,12 @@ class TMBRIDGE_PT_MapPreviewMood(bpy.types.Panel):
         row = layout.row()
         row.column(align=True).prop(settings, "mood", expand=True)
         toggles = row.column(align=True)
-        toggles.prop(settings, "animate_time")
+        toggles.prop(settings, "sky")
         clouds = toggles.row(align=True)
         clouds.enabled = settings.sky
         clouds.prop(settings, "clouds")
         toggles.prop(settings, "surroundings")
-        toggles.prop(settings, "sky")
+        toggles.prop(settings, "animate_time")
         if settings.animate_time:
             layout.prop(settings, "cycle_seconds")
         layout.prop(settings, "time_of_day", slider=True)

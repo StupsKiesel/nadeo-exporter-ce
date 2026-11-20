@@ -2,6 +2,50 @@
 
 All notable user-facing changes to Nadeo Exporter Community Edition.
 
+## [0.0.16] - 2026-11-21
+
+### Added
+
+- Import standalone Mesh Modeller `.Crystal.Gbx` saves with **Item / Crystal**.
+- Import custom item lights and decoded point/spot light settings. Light
+  animations, flares, projections and night-only switching are not rendered.
+- The Map preset populates authored grandstands at 30% occupancy.
+
+### Changed
+
+- Preferences now use a game selector and Openplanet search; empty paths are
+  unset and required paths show alerts. Linux discovery includes Steam and Wine.
+- Previously configured custom GameData folders must be selected again under
+  **Custom GameData Libraries**. Old packs and resource-cache overrides are
+  inactive; persistent parse caching is disabled.
+- Separate Openplanet plugins are bundled for Trackmania 2020 and ManiaPlanet.
+  ManiaPlanet extraction is unverified; Turbo and Forever plugins are unavailable.
+- With **Fetch Missing Files** enabled, failed GBX files receive one automatic
+  hook-extraction retry, except known crashers. Hook extraction can still crash
+  Trackmania.
+- **Make Editable** includes a block's clips and is faster on large maps.
+  Re-import older maps for exact clip matching.
+- On Windows, **Console on Import** opens the console by default.
+- Matching locator resources can be reused from the game's read-only cache.
+- Preferences, update controls and developer web-server tools have been reorganized.
+- Trimsheet generation now selects a Blender material and displays its diffuse image.
+
+### Fixed
+
+- Crystal translation no longer duplicates geometry, and ordinary scaling uses
+  the vertex centroid. Re-import affected items or maps.
+- Older compiled custom lights retain their socket placement and no longer
+  overwrite other light settings.
+- Missing or unreadable linked materials now produce warnings; materials on
+  another drive no longer crash BlenderMania compatibility checks.
+- Dependency installation repairs packages incompatible with the current
+  Blender Python version.
+- Item import progress includes geometry building; long steps may still block
+  Blender.
+- Trimsheet candidates can detect nested bands within part of a texture.
+- Clear Blend removes image datablocks even when they have users or fake users.
+- Cloud height centers and the map skin-import setting are respected.
+
 ## [0.0.15] - 2026-11-15
 
 ### Fixed
@@ -138,6 +182,7 @@ All notable user-facing changes to Nadeo Exporter Community Edition.
 
 - First public preview release.
 
+[0.0.16]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.16
 [0.0.15]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.15
 [0.0.14]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.14
 [0.0.13]: https://github.com/StupsKiesel/nadeo-exporter-ce/releases/tag/v0.0.13

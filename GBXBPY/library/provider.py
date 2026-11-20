@@ -27,7 +27,7 @@ from typing import Callable, Iterator, Optional
 
 from .index import GameIndex, save_unavailable
 from .refs import external_references
-from .server import DONE, JobQueue
+from .server import DONE, FileResult, JobQueue, hook_block_reason
 
 log = logging.getLogger("gbxbpy.library")
 
@@ -35,12 +35,7 @@ log = logging.getLogger("gbxbpy.library")
 # Never needed for an import: audio, video and shader sources.
 _SKIP_SUFFIXES = (".sound.gbx", ".ogg", ".wav", ".webm", ".mux", ".hlsl", ".phlsl.txt", ".vhlsl.txt")
 IMPORT_UNUSED_SUFFIXES = _SKIP_SUFFIXES
-# Normal extraction of these returns pack-encrypted bodies (vista
-# TerrainLayers_DNRM, fogger/sparkler effects); one hook extraction per file
-# returns the plain GBX.
-_HOOK_REFETCH_SUFFIXES = (".imagearray.gbx", ".particlemodel.gbx", ".fxsys.gbx")
 _TREE_MODEL_SUFFIX = ".vegettreemodel.gbx"
-_EXPERIMENTAL_HOOK_SUFFIXES = (_TREE_MODEL_SUFFIX, ".item.gbx")
 INDEX_TIMEOUT = 600.0
 TREE_DEPTH = 12
 
@@ -56,7 +51,6 @@ class LibraryProvider:
         library_dir: The GameData folder files are read from.
         queue: The bridge server's job queue; ``None`` reads the disk only.
         fetch: Request missing or broken files from the plugin.
-        experimental_hooked_extraction: Allow hook-mode retries for failed tree-model and item extracts.
         request_timeout: Seconds to wait per request (plus a little per file).
         extract_dir: The GameData folder the plugin extracts into
             (``OpenplanetNext/Extract/GameData``). When it differs from
@@ -64,7 +58,6 @@ class LibraryProvider:
     """
 
     def __init__(self, library_dir: str, queue: Optional[JobQueue] = None, *, fetch: bool = True,
-                 experimental_hooked_extraction: bool = False,
                  request_timeout: float = 120.0, extract_dir: Optional[str] = None) -> None:
         self.library_dir = os.path.normpath(os.path.abspath(library_dir))
         self._prefix = os.path.normcase(self.library_dir) + os.sep
@@ -74,7 +67,6 @@ class LibraryProvider:
         )
         self.queue = queue
         self.fetch_enabled = fetch and queue is not None
-        self.experimental_hooked_extraction = experimental_hooked_extraction
         self.request_timeout = request_timeout
         self.index: Optional[GameIndex] = GameIndex.load(self.library_dir)
         self.status_message = ""
@@ -257,7 +249,7 @@ class LibraryProvider:
                 self.fetch([rel])
                 state = self.state(rel)
                 if state != "ok":
-                    self._retry_experimental_hook_if_needed(rel)
+                    self._retry_hook_if_needed(rel)
                     state = self.state(rel)
             if state == "missing":
                 return False
@@ -292,55 +284,108 @@ class LibraryProvider:
         with self._lock:
             if rel.lower() in self._refetched or not self.can_fetch():
                 return False
-            if rel.lower().endswith(_HOOK_REFETCH_SUFFIXES):
-                self._refetched.add(rel.lower())
-                return self._hook_refetch(rel)
-            if self.experimental_hooked_extraction and rel.lower().endswith(_EXPERIMENTAL_HOOK_SUFFIXES):
-                return self._experimental_hook_refetch(rel)
+            if self.failed.get(rel.lower(), "").lower().startswith("notfound:"):
+                return False
             self._refetched.add(rel.lower())
+            if rel.lower().endswith(".gbx"):
+                kind = "extract_hook_tree" if rel.lower().endswith(_TREE_MODEL_SUFFIX) else "extract_hook"
+                return self._hook_refetch(rel, kind=kind)
             log.info("Re-requesting %s after a parse failure", rel)
             return self.fetch([rel], force=True) > 0
 
-    def _experimental_hook_refetch(self, rel: str) -> bool:
-        key = rel.lower()
-        if (
-            key in self._refetched
-            or not self.can_fetch()
-            or self.failed.get(key, "").lower().startswith("notfound:")
-        ):
-            return False
-        self._refetched.add(key)
-        kind = "extract_hook_tree" if key.endswith(_TREE_MODEL_SUFFIX) else "extract_hook"
-        return self._hook_refetch(rel, kind=kind)
-
-    def _retry_experimental_hook_if_needed(self, rel: str) -> bool:
+    def _retry_hook_if_needed(self, rel: str) -> bool:
         failure = self.failed.get(rel.lower(), "").lower()
         if (
-            not self.experimental_hooked_extraction
-            or not rel.lower().endswith(_EXPERIMENTAL_HOOK_SUFFIXES)
+            not rel.lower().endswith(".gbx")
             or self.state(rel) == "ok"
             or failure.startswith("notfound:")
         ):
             return False
-        return self._experimental_hook_refetch(rel)
+        return self.refetch(self.absolute(rel))
 
     def _hook_refetch(self, rel: str, *, kind: str = "extract_hook") -> bool:
         """One hook extraction of ``rel``; restores the previous bytes unless it succeeds."""
+        reason = hook_block_reason(rel)
+        if reason:
+            self.failed[rel.lower()] = reason
+            log.warning("Not hook-extracting %s: %s", rel, reason)
+            return False
         target = self.absolute(rel)
         try:
             with open(target, "rb") as handle:
                 original: Optional[bytes] = handle.read()
-        except OSError:
+        except FileNotFoundError:
             original = None
+        except OSError as exc:
+            self.failed[rel.lower()] = f"Cannot back up before hook extraction: {exc}"
+            log.warning("Cannot back up %s before hook extraction: %s", rel, exc)
+            return False
         log.info("Re-requesting %s with %s after normal extraction failed", rel, kind)
-        ok = self.fetch([rel], force=True, kind=kind) > 0 and self.state(rel) == "ok"
-        if not ok and original is not None:
-            try:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with open(target, "wb") as handle:
-                    handle.write(original)
-            except OSError as exc:
-                log.warning("Cannot restore %s after a failed hook extraction: %s", rel, exc)
+        ok = False
+        fetched_before = len(self.fetched)
+        try:
+            fetched = self.fetch([rel], force=True, kind=kind) > 0 and self.state(rel) == "ok"
+            if not fetched and self.failed.get(rel.lower(), "").startswith("SIZE:"):
+                from .validate import recover_hook_extract
+
+                source = os.path.join(self.extract_dir or self.library_dir, *rel.split("/"))
+                expected = self.index.size(rel) if self.index is not None else None
+                if expected is None and original is not None:
+                    expected = len(original)
+                try:
+                    # The old body may still be encrypted; only reuse its header.
+                    header_end = 17 + int.from_bytes((original or b"")[13:17], "little")
+                    prefix = (original or b"")[:header_end]
+                    with open(source, "rb") as handle:
+                        recovered = recover_hook_extract(rel, handle.read(), prefix, expected)
+                    with open(source, "wb") as handle:
+                        handle.write(recovered)
+                    failures = self._move_into_library([
+                        FileResult("OK", "GameData/" + rel, str(len(recovered))),
+                    ])
+                    if failures:
+                        self.failed[rel.lower()] = next(iter(failures.values()))
+                    else:
+                        fetched = self.state(rel) == "ok"
+                        if fetched:
+                            self.failed.pop(rel.lower(), None)
+                            self.fetched.append(rel)
+                            log.info("Restored omitted hook header for %s", rel)
+                except (OSError, ValueError) as exc:
+                    self.failed[rel.lower()] = f"Hook header recovery failed: {exc}"
+                    log.warning("Cannot restore hook header for %s: %s", rel, exc)
+            if fetched:
+                from .validate import check_file, check_light
+
+                try:
+                    if rel.lower().endswith(".light.gbx"):
+                        with open(target, "rb") as handle:
+                            check = check_light(handle.read())
+                    else:
+                        check = check_file(target)
+                except OSError as exc:
+                    self.failed[rel.lower()] = f"Hook validation could not read output: {exc}"
+                else:
+                    ok = check.ok
+                    if not ok:
+                        self.failed[rel.lower()] = f"Hook validation failed: {check.reason}"
+                if not ok:
+                    log.warning("Rejected hook output for %s: %s", rel, self.failed[rel.lower()])
+            else:
+                ok = fetched
+        finally:
+            if not ok:
+                del self.fetched[fetched_before:]
+                try:
+                    if original is None:
+                        if os.path.isfile(target):
+                            os.remove(target)
+                    else:
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        with open(target, "wb") as handle:
+                            handle.write(original)
+                except OSError as exc:
+                    log.warning("Cannot restore %s after a failed hook extraction: %s", rel, exc)
         return ok
 
     def _fetch_tree(self, root: str) -> None:
@@ -365,7 +410,7 @@ class LibraryProvider:
             if needed:
                 self.fetch(needed)
                 for rel in needed:
-                    self._retry_experimental_hook_if_needed(rel)
+                    self._retry_hook_if_needed(rel)
             frontier = []
             for rel in candidates:
                 if self.state(rel) == "missing":
@@ -458,6 +503,7 @@ def _set_nice_hook(hook: Optional[Callable[[str], None]]) -> None:
     setter = getattr(parser, "set_file_hook", None)
     if setter is not None:
         setter(hook)
+    parser.set_parse_failure_hook(refetch if hook is not None else None)
 
 
 def activate(provider: Optional[LibraryProvider]) -> None:
